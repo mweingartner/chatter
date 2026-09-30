@@ -1,0 +1,24 @@
+.build/
+.swiftpm/
+.DS_Store
+.runtime/
+artifacts/
+*.log
+__pycache__/
+.venv/
+.claude/plans/
+.claude/projects/
+.claude/todos/
+.claude/memory/
+*.profraw
+
+# Local speech data and publication scratch space must never enter source control.
+Runtime/
+.release-build/
+.test-build/
+release/
+*.safetensors
+*.gguf
+api-token
+.env
+.env.*

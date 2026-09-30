@@ -1,0 +1,25 @@
+{
+ "result": {
+  "transcript": "A synthetic test transcript.",
+  "metrics": {
+   "duration": 5.2,
+   "peak": 0.3199746608734131,
+   "rms": 0.16140325367450714,
+   "clippedFraction": 0.0,
+   "silenceFraction": 0.4230769230769231,
+   "score": 73.22076923076922,
+   "warnings": [
+    "Record at least 10 seconds for a stronger voice reference.",
+    "This take contains substantial silence. Use a continuous, natural reading."
+   ]
+  },
+  "path": "/synthetic-fixture/reference.wav",
+  "originalFileName": "original.wav"
+ },
+ "lo": 48510,
+ "hi": 189630,
+ "gain": 2.7814702500836392,
+ "referenceLength": 141120,
+ "referenceSHA256": "dfaf8788a7c71e84ce389c6b1bef9c3a38c4cba25e2dca9af602c7d592af67f2",
+ "transcriptFile": "A synthetic test transcript."
+}

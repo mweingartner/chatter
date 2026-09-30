@@ -1,0 +1,3 @@
+Model: https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16
+Revision: 7d3824abff87e49756bb0f83fb5411de75d160c4
+Weights downloaded separately. Original model card declares Apache-2.0; the full license is included at docs/licenses/Qwen3-TTS-LICENSE. The converted repository supplies no separate LICENSE file at this revision.

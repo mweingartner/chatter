@@ -1,0 +1,18 @@
+Chatter
+Copyright (c) 2026 Michael Weingartner
+
+Chatter's original code and documentation are licensed under the MIT License.
+Third-party source, models, and assets retain their original licenses.
+The root MIT license does not replace those licenses.
+
+This distribution includes software developed by Apple and the Swift project,
+Hugging Face, Qwen/Alibaba, Prince Canuma, and the other authors identified in
+docs/THIRD_PARTY_NOTICES.md and docs/licenses/. Copyright and attribution
+notices are retained in the included source and license files.
+
+Qwen3Speech and Qwen3CodecSupport contain a modified MIT-licensed port of
+MLX-Audio-Swift. QwenSpeakerMel.swift follows the Apache-2.0 Qwen reference.
+See docs/QWEN_PORT.md for the source revisions and modifications.
+
+Model weights are downloaded separately and retain their model licenses.
+No personal voice recordings, saved voice profiles, or API tokens are supplied.

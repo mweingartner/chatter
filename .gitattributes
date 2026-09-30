@@ -1,0 +1,12 @@
+Vendor/** linguist-vendored
+Tests/**/Fixtures/** linguist-generated
+*.wav binary
+*.f32 binary
+*.aiff binary
+*.caf binary
+*.flac binary
+*.mp3 binary
+*.m4a binary
+*.aac binary
+*.ogg binary
+*.opus binary

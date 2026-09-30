@@ -1,0 +1,26 @@
+{
+  "name": "chatter",
+  "version": "3.0.2",
+  "description": "Local Qwen3-TTS voices, expressive speech, voice design and multi-actor dialogue for video narration.",
+  "author": {
+    "name": "Michael Weingartner"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Chatter",
+    "shortDescription": "Your voice for speech and video narration.",
+    "longDescription": "Generate local Qwen3-TTS speech, discover recorded and expressive voices, or create multi-actor dialogue with turn timings. Save high-quality WAVs for Remotion and Borumi. Durable requests run in FIFO order.",
+    "developerName": "Michael Weingartner",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Create a narrated video using Chatter and Remotion",
+      "Create a dialogue with a different saved voice for each actor",
+      "List my voices and their supported delivery controls"
+    ],
+    "brandColor": "#168F91",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  }
+}

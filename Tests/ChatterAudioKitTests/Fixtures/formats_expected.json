@@ -1,0 +1,47 @@
+{
+  "wav": {
+    "length": 176400,
+    "rms": 0.048103889036878414,
+    "source": "ffmpeg/average-downmix"
+  },
+  "mp3": {
+    "length": 176400,
+    "rms": 0.046659273151387494,
+    "source": "ffmpeg/average-downmix"
+  },
+  "m4a": {
+    "length": 176871,
+    "rms": 0.04802626861010648,
+    "source": "ffmpeg/average-downmix"
+  },
+  "aac": {
+    "length": 177812,
+    "rms": 0.04789902175789502,
+    "source": "ffmpeg/average-downmix"
+  },
+  "flac": {
+    "length": 176400,
+    "rms": 0.048103889036878414,
+    "source": "ffmpeg/average-downmix"
+  },
+  "aiff": {
+    "length": 176400,
+    "rms": 0.048103889036878414,
+    "source": "ffmpeg/average-downmix"
+  },
+  "caf": {
+    "length": 176400,
+    "rms": 0.048103889036878414,
+    "source": "ffmpeg/average-downmix"
+  },
+  "ogg": {
+    "length": 176400,
+    "rms": 0.048119722131651235,
+    "source": "ffmpeg/average-downmix"
+  },
+  "opus": {
+    "length": 176400,
+    "rms": 0.04809997191074864,
+    "source": "ffmpeg/average-downmix"
+  }
+}

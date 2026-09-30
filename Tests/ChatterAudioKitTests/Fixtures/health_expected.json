@@ -1,0 +1,79 @@
+{
+ "silence": {
+  "duration": 12.0,
+  "peak": 0.0,
+  "rms": 0.0,
+  "clippedFraction": 0.0,
+  "silenceFraction": 1.0,
+  "score": 26.25,
+  "warnings": [
+   "Recording is quiet. Move closer to the microphone.",
+   "This take contains substantial silence. Use a continuous, natural reading."
+  ]
+ },
+ "quiet": {
+  "duration": 15.0,
+  "peak": 0.009999997913837433,
+  "rms": 0.007071067579090595,
+  "clippedFraction": 0.0,
+  "silenceFraction": 0.0,
+  "score": 75.1,
+  "warnings": [
+   "Recording is quiet. Move closer to the microphone."
+  ]
+ },
+ "clipping": {
+  "duration": 20.0,
+  "peak": 1.0,
+  "rms": 0.7831076383590698,
+  "clippedFraction": 0.37369614512471655,
+  "silenceFraction": 0.0,
+  "score": 0.0,
+  "warnings": [
+   "Clipping detected. Lower microphone gain and record again."
+  ]
+ },
+ "long": {
+  "duration": 40.5,
+  "peak": 0.19999994337558746,
+  "rms": 0.1154700517654419,
+  "clippedFraction": 0.0,
+  "silenceFraction": 0.3333333333333333,
+  "score": 76.96666666666667,
+  "warnings": [
+   "A focused 10–30 second take usually responds faster. Split long recordings into natural passages."
+  ]
+ },
+ "short": {
+  "duration": 5.0,
+  "peak": 0.2999967932701111,
+  "rms": 0.1730281114578247,
+  "clippedFraction": 0.0,
+  "silenceFraction": 0.0,
+  "score": 88.1,
+  "warnings": [
+   "Record at least 10 seconds for a stronger voice reference."
+  ]
+ },
+ "ideal": {
+  "duration": 22.0,
+  "peak": 0.10999858379364014,
+  "rms": 0.07094123214483261,
+  "clippedFraction": 0.0,
+  "silenceFraction": 0.0,
+  "score": 100.0,
+  "warnings": []
+ },
+ "tiny": {
+  "duration": 0.006802721088435374,
+  "peak": 0.4999968409538269,
+  "rms": 0.35395440459251404,
+  "clippedFraction": 0.0,
+  "silenceFraction": 1.0,
+  "score": 37.8547619047619,
+  "warnings": [
+   "Record at least 10 seconds for a stronger voice reference.",
+   "This take contains substantial silence. Use a continuous, natural reading."
+  ]
+ }
+}

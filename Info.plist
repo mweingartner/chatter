@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Chatter</string>
+	<key>CFBundleExecutable</key>
+	<string>Chatter</string>
+	<key>CFBundleIconFile</key>
+	<string>Chatter.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.chatter.app</string>
+	<key>CFBundleName</key>
+	<string>Chatter</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>3.0.2</string>
+	<key>CFBundleVersion</key>
+	<string>11</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Chatter serves authenticated speech requests from your other devices on the local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Chatter records your guided reading to create a private, local voice profile.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Chatter transcribes imported voice recordings on this Mac so every take has an exact transcript.</string>
+</dict>
+</plist>
