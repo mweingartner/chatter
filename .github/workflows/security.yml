@@ -32,7 +32,10 @@ jobs:
         run: swift build --build-tests --jobs 2
       - name: Test native code and security boundaries
         timeout-minutes: 5
-        run: swift test --skip-build --jobs 2
+        # Keep wall-clock assertions and loopback mocks from competing with all fuzz
+        # cases in the older toolchain's single combined test process. Stress tests
+        # still create their own concurrent clients; the next step stresses the executor.
+        run: swift test --skip-build --jobs 2 --no-parallel
       - name: Verify integration under a single cooperative worker
         timeout-minutes: 3
         env:
