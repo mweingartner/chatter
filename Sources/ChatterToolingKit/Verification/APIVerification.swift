@@ -71,16 +71,16 @@ public struct APIVerification: Sendable {
         let tools = try await api.json("/mcp", body: VerificationSettings.rpc("tools/list"))
         try verify(tools["result"]?["tools"]?.arrayValue?.count == 8, "MCP tools/list did not list eight tools.")
 
-        try verifyBridge()
+        try await verifyBridge()
         try writeReport(JSONValue.array(jobs).encoded(.indented), to: report)
         try output.line(
             "PASS authentication, origin, protocol, input validation, FIFO, idempotency, cancellation, WAV retrieval, MCP, portable stdio bridge")
     }
 
     /// Runs one `chatter_status` call through the `chatter-mcp` binary against the same instance.
-    private func verifyBridge() throws {
+    private func verifyBridge() async throws {
         let call = VerificationSettings.rpc("tools/call", ["name": "chatter_status", "arguments": [:]])
-        let result = try ChildProcess.run(
+        let result = try await ChildProcess.runAsync(
             settings.bridgeExecutable, input: Data((call.encoded() + "\n").utf8), environment: settings.bridgeEnvironment)
         try verify(result.status == 0, "chatter-mcp exited with status \(result.status).")
         let reply = try? JSONValue.parse(result.standardOutput)

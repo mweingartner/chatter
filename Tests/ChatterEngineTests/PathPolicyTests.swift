@@ -199,7 +199,7 @@ struct PathPolicyTests {
     }
 
     /// Preparing through a dangling link fails and creates nothing outside the library.
-    @Test func preparingThroughADanglingLinkWritesNothingOutside() throws {
+    @Test @MainActor func preparingThroughADanglingLinkWritesNothingOutside() throws {
         let scratch = try Scratch(); defer { scratch.remove() }
         let fm = FileManager.default
         try fm.createDirectory(at: scratch.url.appending(path: "Voices/v"), withIntermediateDirectories: true)
@@ -377,7 +377,7 @@ struct EngineCoreTests {
     }
 
     /// End to end without the GPU: a recording is prepared into the library and analysed.
-    @Test func preparesAndAnalyzesARecording() throws {
+    @Test @MainActor func preparesAndAnalyzesARecording() throws {
         let scratch = try Scratch(); defer { scratch.remove() }
         let events = EventLog()
         let engine = Self.engine(scratch, events: events)
@@ -431,7 +431,9 @@ struct EngineCoreTests {
         #expect(!engine.isCancelledExternally("a"))
     }
 
-    @Test func runBlockingReturnsValuesAndRethrows() throws {
+    // The production helper calls runBlocking from a dedicated engine thread. Keep this
+    // synchronous bridge off the cooperative executor, including on two-core CI runners.
+    @Test @MainActor func runBlockingReturnsValuesAndRethrows() throws {
         #expect(try runBlocking { 41 + 1 } == 42)
         #expect(throws: EngineFailure.self) { try runBlocking { () async throws -> Int in throw EngineFailure.failed("x") } }
     }

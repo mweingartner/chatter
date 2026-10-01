@@ -156,7 +156,7 @@ struct MCPBridgeTests {
             #"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#, #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#, "garbage", #"{"jsonrpc":"2.0","method":"late"}"#,
         ].joined(separator: "\n")
-        let result = try ChildProcess.run(
+        let result = try await ChildProcess.runAsync(
             BuiltProducts.bridge, input: Data(input.utf8),
             environment: ["CHATTER_URL": server.baseURL, "CHATTER_TOKEN_FILE": directory.file("token").path, "HOME": directory.url.path])
         let stdout = String(decoding: result.standardOutput, as: UTF8.self)
@@ -173,10 +173,10 @@ struct MCPBridgeTests {
     }
 
     @Test("chatter-mcp without a token explains how to connect and still exits 0")
-    func executableWithoutToken() throws {
+    func executableWithoutToken() async throws {
         let directory = try TemporaryDirectory()
         defer { directory.remove() }
-        let result = try ChildProcess.run(
+        let result = try await ChildProcess.runAsync(
             BuiltProducts.bridge, input: Data(#"{"id":1}"#.utf8) + Data("\n".utf8),
             environment: ["HOME": directory.url.path, "CHATTER_TOKEN_FILE": directory.file("missing").path])
         #expect(result.status == 0)
@@ -184,8 +184,8 @@ struct MCPBridgeTests {
     }
 
     @Test("chatter-mcp exits 0 immediately on empty stdin")
-    func executableEOF() throws {
-        let result = try ChildProcess.run(BuiltProducts.bridge, environment: ["HOME": "/nonexistent"])
+    func executableEOF() async throws {
+        let result = try await ChildProcess.runAsync(BuiltProducts.bridge, environment: ["HOME": "/nonexistent"])
         #expect(result.status == 0 && result.standardOutput.isEmpty && result.standardError.isEmpty)
     }
 }

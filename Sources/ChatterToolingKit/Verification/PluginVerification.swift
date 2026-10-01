@@ -39,32 +39,32 @@ public struct PluginVerification: Sendable {
         let session = try launch()
         defer { session.close() }
         var serial = 0
-        func send(_ method: String, _ params: JSONValue) throws -> JSONValue {
+        func send(_ method: String, _ params: JSONValue) async throws -> JSONValue {
             serial += 1
             try session.send(JSONValue.object(["jsonrpc": "2.0", "id": .int(serial), "method": .string(method), "params": params]).encoded())
-            guard let line = session.nextLine(timeout: responseTimeout) else {
+            guard let line = await session.nextLineAsync(timeout: responseTimeout) else {
                 throw VerificationFailure("Installed Chatter MCP transport did not respond")
             }
             let response = try JSONValue.parse(line)
             try verify(response["id"] == .int(serial) && response["error"] == nil, response.encoded())
             return try response.required("result")
         }
-        func call(_ name: String, _ arguments: JSONValue = [:]) throws -> JSONValue {
-            let result = try send("tools/call", ["name": .string(name), "arguments": arguments])
+        func call(_ name: String, _ arguments: JSONValue = [:]) async throws -> JSONValue {
+            let result = try await send("tools/call", ["name": .string(name), "arguments": arguments])
             try verify(!(result["isError"]?.isTruthy ?? false), result.encoded())
             return try result.required("structuredContent", name)
         }
 
-        let initialized = try send("initialize", [
+        let initialized = try await send("initialize", [
             "protocolVersion": .string(ChatterMCPForwarder.protocolVersion), "capabilities": [:],
             "clientInfo": ["name": "chatter-plugin-verifier", "version": "1"],
         ])
         try session.send(JSONValue.object(["jsonrpc": "2.0", "method": "notifications/initialized"]).encoded())
-        let toolset = try send("tools/list", [:]).requiredArray("tools")
+        let toolset = try await send("tools/list", [:]).requiredArray("tools")
         try verify(Set(toolset.compactMap { $0["name"]?.stringValue }) == Self.toolNames && toolset.count == Self.toolNames.count,
             "The transport does not list exactly the eight Chatter tools.")
-        try verify(try call("chatter_status")["engine"] == "ready", "The Chatter engine is not ready.")
-        let capabilities = try call("chatter_capabilities")
+        try verify(try await call("chatter_status")["engine"] == "ready", "The Chatter engine is not ready.")
+        let capabilities = try await call("chatter_capabilities")
         try verify(capabilities["engine"] == "Qwen3-TTS" && capabilities["sampleRate"] == 24000 && capabilities["wavBits"] == 24,
             "Expected the Qwen3-TTS capability catalog and native 24 kHz/24-bit output.")
         let speechProperties = toolset.first { $0["name"] == "chatter_speak" }?["inputSchema"]?["properties"]?.objectValue
@@ -72,13 +72,13 @@ public struct PluginVerification: Sendable {
         try verify(["language", "instruction", "quality", "sampleID"].allSatisfy { speechProperties?[$0] != nil }
             && ["cast", "turns", "mode", "quality", "pace", "gapSeconds"].allSatisfy { dialogueProperties?[$0] != nil },
             "The transport has stale speech or dialogue schemas; refresh the plugin in a new chat.")
-        let tones = try call("chatter_tones").requiredArray("tones")
+        let tones = try await call("chatter_tones").requiredArray("tones")
         let toneIDs = tones.map { $0["id"]?.stringValue ?? "" }
         let speechTool = toolset.first { $0["name"] == "chatter_speak" }
         try verify(speechTool?["inputSchema"]?["properties"]?["tone"]?["enum"] == .array(toneIDs.map(JSONValue.string)),
             "chatter_speak's tone enum does not match chatter_tones.")
         try verify(toneIDs.count == 33 && Set(["cheerful", "optimistic", "stern"]).isSubset(of: toneIDs), "Expected 33 tones.")
-        let voices = try call("chatter_voices").requiredArray("voices")
+        let voices = try await call("chatter_voices").requiredArray("voices")
         // The historical default test voice may have been removed; then use the library's default voice.
         let named = voices.first(where: { $0["name"]?.stringValue?.lowercased() == voice.lowercased() })
         let fallback = voice == Self.defaultVoice ? voices.first(where: { $0["isDefault"] == true }) : nil
@@ -93,13 +93,13 @@ public struct PluginVerification: Sendable {
         ]
         if supportsInstructions { fields["instruction"] = "Speak warmly and clearly, with an optimistic delivery." }
         let request = JSONValue.object(fields)
-        var job = try call("chatter_speak", request)
+        var job = try await call("chatter_speak", request)
         let deadline = ContinuousClock.now.advanced(by: .seconds(jobDeadline))
         while !["completed", "failed", "cancelled"].contains(job["state"]?.stringValue ?? "") {
             let id = job["id"]?.pythonDescription ?? "unknown"
             guard ContinuousClock.now < deadline else { throw VerificationFailure("Narration still queued or running: \(id)") }
             try await Task.sleep(for: .seconds(pollInterval))
-            job = try call("chatter_job", ["id": try job.required("id", "job")])
+            job = try await call("chatter_job", ["id": try job.required("id", "job")])
         }
         try verify(job["state"] == "completed", job.encoded())
         try verify(job["request"]?["tone"] == request["tone"], "The job did not keep the requested tone.")

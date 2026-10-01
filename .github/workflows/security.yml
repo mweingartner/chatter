@@ -28,8 +28,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build native code and tests
+        run: swift build --build-tests --jobs 2
       - name: Test native code and security boundaries
-        run: swift test --jobs 2
+        timeout-minutes: 5
+        run: swift test --skip-build --jobs 2
+      - name: Verify integration under a single cooperative worker
+        timeout-minutes: 3
+        env:
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: '1'
+        run: swift test --skip-build --jobs 2 --filter 'EngineSandboxTests|EngineCoreTests|MCPBridgeTests|VerificationTests'
       - name: Require credentials before production packaging
         run: |
           if scripts/package-release.sh > /tmp/release-gate.log 2>&1; then

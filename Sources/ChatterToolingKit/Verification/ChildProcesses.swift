@@ -10,6 +10,20 @@ public enum ChildProcess {
         public let standardError: Data
     }
 
+    /// Async callers must not occupy a cooperative worker while their child waits for
+    /// an HTTP server or another task running on that same executor.
+    public static func runAsync(
+        _ executable: String, _ arguments: [String] = [], input: Data = Data(),
+        environment: [String: String]? = nil, currentDirectory: URL? = nil
+    ) async throws -> Result {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                do { continuation.resume(returning: try run(executable, arguments, input: input, environment: environment, currentDirectory: currentDirectory)) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
     /// Launches `executable`, feeds `input`, and collects both output streams without pipe deadlock.
     /// A bare command name (no `/`) is resolved through `PATH` via `/usr/bin/env`.
     public static func run(
@@ -99,6 +113,13 @@ public final class MCPStdioSession {
 
     /// The next complete stdout line, or `nil` on timeout or EOF.
     public func nextLine(timeout: TimeInterval) -> String? { lines.next(timeout: timeout) }
+
+    public func nextLineAsync(timeout: TimeInterval) async -> String? {
+        let buffer = lines
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { continuation.resume(returning: buffer.next(timeout: timeout)) }
+        }
+    }
 
     /// Closes stdin and waits up to 5 s for exit, then terminates (and waits another 5 s).
     public func close() {

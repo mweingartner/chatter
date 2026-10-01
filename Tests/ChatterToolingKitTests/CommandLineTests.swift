@@ -86,10 +86,10 @@ struct CommandLineTests {
     }
 
     @Test("The built chatter-tools binary exits non-zero with usage on bad arguments")
-    func binary() throws {
-        let result = try ChildProcess.run(BuiltProducts.tools, ["verify"])
+    func binary() async throws {
+        let result = try await ChildProcess.runAsync(BuiltProducts.tools, ["verify"])
         #expect(result.status == 2)
         #expect(String(decoding: result.standardError, as: UTF8.self).contains("usage: chatter-tools"))
-        #expect(try ChildProcess.run(BuiltProducts.tools, ["--help"]).status == 0)
+        #expect(try await ChildProcess.runAsync(BuiltProducts.tools, ["--help"]).status == 0)
     }
 }
