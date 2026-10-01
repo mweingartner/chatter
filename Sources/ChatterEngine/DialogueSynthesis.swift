@@ -18,7 +18,7 @@ struct DialogueSynthesis {
         try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
         try FileManager.default.createDirectory(at:output.deletingLastPathComponent(),withIntermediateDirectories:true)
         let unpaced=directory.appending(path:"dialogue-unpaced.wav")
-        let writer=try WAVStreamWriter(url:unpaced,sampleRate:24000)
+        let writer=try WAVStreamWriter(url:unpaced,sampleRate:24000,maximumSeconds: min(7200, max(1,command.maximumAudioSeconds ?? 1800)) * command.pace)
         var completed=false
         defer { if !completed { writer.cancel();try? FileManager.default.removeItem(at:output) };try? FileManager.default.removeItem(at:unpaced) }
         let start=ContinuousClock.now
@@ -34,7 +34,11 @@ struct DialogueSynthesis {
         }
         for (index,turn) in turns.enumerated() {
             if engine.isCancelled(command.id) { throw EngineFailure.cancelled }
-            let child=Self.turnCommand(command,turn:turn,index:index)
+            var child=Self.turnCommand(command,turn:turn,index:index)
+            child.maximumAudioSeconds = min(7200, max(1,command.maximumAudioSeconds ?? 1800)) * command.pace - cursor
+            guard child.maximumAudioSeconds! > 0 else { throw EngineFailure.failed("Speech duration limit reached.") }
+            child.maximumGenerationSeconds = (command.maximumGenerationSeconds ?? 3600) - (ContinuousClock.now-start).seconds
+            guard child.maximumGenerationSeconds! > 0 else { throw EngineFailure.failed("Generation time limit reached.") }
             engine.send(command.id,"progress",["message":"\(turn.actor) • turn \(index+1) of \(turns.count)"])
             let result = try SynthesisJob(engine:engine,command:child,onChunk:deliver).run()
             let samples=try AudioIO.readMono(URL(filePath:child.output),sampleRate:24000)

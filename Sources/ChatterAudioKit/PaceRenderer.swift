@@ -1,6 +1,7 @@
 // Native audio services for Chatter (AVFoundation, Accelerate, Speech).
 import AVFoundation
 import Foundation
+import ChatterCore
 
 /// Changes speech pace without changing pitch, offline, using AVAudioUnitTimePitch.
 public enum PaceRenderer {
@@ -31,6 +32,7 @@ public enum PaceRenderer {
         let temporary = AtomicFile.temporaryURL(beside: output)
         let writer: AVAudioFile
         do {
+            try PrivateStorage.write(Data(), to: temporary)
             writer = try AVAudioFile(forWriting: temporary, settings: settings)
         } catch {
             throw ChatterAudioError.writeFailed(reason: error.localizedDescription)

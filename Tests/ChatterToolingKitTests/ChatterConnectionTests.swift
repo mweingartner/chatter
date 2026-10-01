@@ -42,8 +42,8 @@ struct ChatterConnectionTests {
         let home = try home(token: "file-token")
         defer { home.remove() }
         let lan = try ChatterConnection.resolve(
-            environment: ["CHATTER_URL": "http://mac.local:18423//", "CHATTER_TOKEN": "env-token"], home: home.url)
-        #expect(lan == ChatterConnection(baseURL: "http://mac.local:18423", token: "env-token"))
+            environment: ["CHATTER_URL": "https://mac.local:18424//", "CHATTER_TOKEN": "env-token"], home: home.url)
+        #expect(lan == ChatterConnection(baseURL: "https://mac.local:18424", token: "env-token"))
         try Data("custom\n".utf8).write(to: home.file("lan-token"))
         let custom = try ChatterConnection.resolve(environment: ["CHATTER_TOKEN": "", "CHATTER_TOKEN_FILE": "~/lan-token"], home: home.url)
         #expect(custom.token == "custom")

@@ -17,7 +17,11 @@ public struct ChatterConnection: Sendable, Equatable, CustomStringConvertible {
         self.token = token
     }
 
-    public var description: String { "ChatterConnection(\(baseURL))" }
+    public var description: String {
+        var url = URLComponents(string: baseURL)
+        url?.user = nil; url?.password = nil; url?.query = nil; url?.fragment = nil
+        return "ChatterConnection(\(url?.string ?? "invalid URL"))"
+    }
 
     /// `~/Library/Application Support/Chatter` for the given home directory.
     public static func supportDirectory(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
@@ -46,15 +50,22 @@ public struct ChatterConnection: Sendable, Equatable, CustomStringConvertible {
         guard token.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7F }) else {
             throw .tokenHasInvalidCharacters
         }
-        return ChatterConnection(baseURL: url, token: token)
+        if let pin = environment["CHATTER_TLS_SHA256"], !Self.validFingerprint(pin) { throw .invalidTLSFingerprint }
+        let connection = ChatterConnection(baseURL: url, token: token)
+        _ = try connection.url(for: "/mcp")
+        return connection
     }
 
     /// Absolute URL for a server-relative route such as `/mcp`.
     public func url(for route: String) throws(ChatterConnectionError) -> URL {
         guard let url = URL(string: baseURL + route), let scheme = url.scheme?.lowercased(),
-            scheme == "http" || scheme == "https", url.host() != nil
+            (scheme == "http" || scheme == "https"), url.host() != nil, url.user == nil, url.password == nil, url.fragment == nil
         else { throw .invalidURL }
+        guard scheme == "https" || ["127.0.0.1", "localhost", "::1", "[::1]"].contains(url.host()!.lowercased()) else { throw .insecureRemoteURL }
         return url
+    }
+    public static func validFingerprint(_ value: String) -> Bool {
+        value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
     }
 
     /// The `port` from `settings.json`, or the default when the file or key is unusable.
@@ -83,6 +94,8 @@ public enum ChatterConnectionError: ChatterToolingFailure, Sendable, Equatable {
     case tokenEmpty
     case tokenHasInvalidCharacters
     case invalidURL
+    case insecureRemoteURL
+    case invalidTLSFingerprint
     case httpStatus(Int)
     case unreachable
     case invalidResponse(String)
@@ -93,6 +106,8 @@ public enum ChatterConnectionError: ChatterToolingFailure, Sendable, Equatable {
             "Chatter connection token not found. Start Chatter locally, or set CHATTER_URL and CHATTER_TOKEN_FILE for your LAN host."
         case .tokenEmpty: "Chatter token is empty."
         case .tokenHasInvalidCharacters: "Chatter token contains characters that cannot be sent in an HTTP header."
+        case .insecureRemoteURL: "Remote Chatter connections require HTTPS. Use the LAN HTTPS port and verified CHATTER_TLS_SHA256 fingerprint."
+        case .invalidTLSFingerprint: "CHATTER_TLS_SHA256 must be the 64 hexadecimal characters shown in Chatter Connections."
         case .invalidURL: "CHATTER_URL is not a valid http(s) URL."
         case .httpStatus(let code): "Chatter returned HTTP \(code). Check the host, token, and connection settings."
         case .unreachable: "Chatter is unreachable. Start the app and check its Connections settings."

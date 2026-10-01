@@ -1,4 +1,16 @@
-# Chatter 3.0.2 — initial public release
+# Chatter 3.1.0 — security hardening
+
+- Local HTTP remains on loopback for existing Mac integrations. LAN access is now opt-in HTTPS on a separate port with a verifiable certificate fingerprint. Existing plaintext LAN settings are disabled during migration.
+- Named client credentials have permissions, optional voice restrictions, expiration, revocation, and isolated job access. The master credential works only on the local listener.
+- Authentication precedes body buffering, with bounded connection pools, request deadlines, client rate limits, and per-client queue limits.
+- Indexed SQLite receipts replace per-job JSON storage. Pending payloads, retained history, audio storage, generation time, and audio duration have limits. Exported WAVs are preserved unless automatic export deletion is explicitly enabled.
+- Private data and new WAV files use owner-only permissions. Audio downloads stream from a validated file, and imports are size-checked before decoding.
+- The inference helper runs with a process policy that blocks networking and restricts file access. Changed model files are rechecked against pinned SHA-256 hashes before loading.
+- Production packaging now requires Developer ID signing and successful notarization. Dependency/advisory checks, an SBOM, and security regression tests run in GitHub Actions.
+
+No notarized 3.1.0 binary has been published from this machine: its Developer ID distribution identity and notarization credentials are not configured. The existing 3.0.2 public download predates these changes. Local development builds remain available with explicit `--development` packaging.
+
+## Chatter 3.0.2 — initial public release
 
 Native Swift/MLX Qwen3-TTS speech for Apple Silicon, macOS 26 or later.
 

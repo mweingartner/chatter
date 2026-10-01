@@ -2,9 +2,11 @@
 
 A native macOS speech studio and always-available HTTP/MCP service, powered by **Qwen3-TTS on Apple Silicon**. Speak in a saved voice, create a multi-actor conversation, or export studio WAV narration for a video. Speech generation runs locally, in Swift and MLX, without Python.
 
-[Download Chatter](https://github.com/mweingartner/chatter/releases/latest) · [API](docs/API.md) · [Connect an AI client](Integration/README.md) · [Build and release](docs/BUILDING.md)
+[Published downloads](https://github.com/mweingartner/chatter/releases/latest) · [API](docs/API.md) · [Connect an AI client](Integration/README.md) · [Build and release](docs/BUILDING.md)
 
 ## Install
+
+Current source is **3.1.0**, including security hardening. The existing **3.0.2** download predates these changes; a production 3.1.0 binary requires Developer ID signing and notarization. See [security](SECURITY.md) and [building](docs/BUILDING.md).
 
 1. Download `Chatter-3.0.2-macOS-arm64.zip` from [Releases](https://github.com/mweingartner/chatter/releases), unzip, and drag **Chatter.app** into **Applications**.
 2. Open Chatter. This initial public release is **ad-hoc signed, not notarized**. If macOS blocks it, use **System Settings → Privacy & Security → Open Anyway** after attempting to open it. See [Apple's instructions](https://support.apple.com/en-us/102445). No system-wide security setting needs to be disabled.
@@ -42,7 +44,7 @@ Building requires Xcode with Swift 6.2 or newer and the macOS 26 SDK or newer. A
 
 The repository and release include **only Aiden and Ryan preset definitions**, with no custom voice recordings, transcripts, saved profiles, API tokens, or generated narration. New installs receive their own token. Existing voice libraries are preserved, including intentionally empty ones.
 
-Voice data and models live in `~/Library/Application Support/Chatter`; saved audio defaults to `~/Chatter/Audio`. Preferences controls the output folder, network access, token, and startup. Synthesis and transcription run locally. HTTP authentication is intended for a trusted LAN; use a private HTTPS proxy on an untrusted network. The plugin does not create a public tunnel.
+Voice data and models live in `~/Library/Application Support/Chatter`; saved audio defaults to `~/Chatter/Audio`. Preferences controls the output folder, network access, token, and startup. Synthesis and transcription run locally. Local HTTP is loopback-only. Enable native LAN HTTPS explicitly and create a scoped client token; verify the server fingerprint in the portable plugin. Existing plaintext LAN settings migrate to local-only. The plugin does not create a public tunnel.
 
 For any local stdio MCP client, use `/Applications/Chatter.app/Contents/MacOS/chatter-mcp` as the server command. See [connection examples and plugin setup](Integration/README.md).
 

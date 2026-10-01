@@ -19,6 +19,8 @@ public struct EngineReference: Codable, Sendable, Equatable {
 public struct SynthesizeCommand: Codable, Sendable {
     public var dialogueTurns: [EngineDialogueTurn]?
     public var gapSeconds: Double?
+    public var maximumAudioSeconds: Double?
+    public var maximumGenerationSeconds: Double?
     public var id: String
     public var text: String
     public var references: [EngineReference]

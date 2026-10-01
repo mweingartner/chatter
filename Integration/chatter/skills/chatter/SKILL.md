@@ -37,3 +37,9 @@ When the user asks to use the narration in Borumi and Borumi tools are available
 If the client and editor run on different machines, first retrieve the WAV to the editor's filesystem through the authenticated audio endpoint. If Borumi is unavailable, return the completed WAV and timing record without claiming an import. Other editors can consume the same WAV and timing record; no Borumi-specific audio format is required.
 
 Voice setup, batch audio import and guided microphone recording happen in Chatter's Your voices panel. Tone cues guide delivery with variable strength; do not promise a particular emotional intensity or approved voice likeness. The model uses local reference adaptation; do not describe it as a completed fine-tuning run. Do not claim voice resemblance has been approved unless the user has assessed it.
+
+## Secure connections and retention
+
+Local connections keep using the loopback administrator token. LAN connections require HTTPS on the configured LAN port (default 18424), an expiring scoped client token, and `CHATTER_TLS_SHA256` verified against the fingerprint displayed on the host Mac. Never bypass TLS validation or reuse the local administrator token for a remote connection. Expired/revoked tokens require a replacement in Chatter Connections. Clients can see only their own jobs and permitted voices.
+
+Honor Retry-After for 429 responses and reuse the same requestID for retries. Limits may refuse requests for disk space, per-client capacity, audio duration or generation time. Report refusal or failure rather than claiming completion. Stage completed narration into the video project promptly: job history expires according to the host's retention preferences, and automatic audio deletion may be enabled. A project's staged copies remain independent of Chatter retention. Do not resubmit an old requestID after its receipt expires without confirming whether the audio was already produced.

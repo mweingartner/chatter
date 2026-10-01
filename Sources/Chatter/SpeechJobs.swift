@@ -2,11 +2,12 @@ import Foundation
 import ChatterCore
 
 extension AppModel {
-    func submit(_ input: SpeechRequest, requestID: String? = nil, respell: Bool = true) throws -> SpeechJob {
+    func submit(_ input: SpeechRequest, requestID: String? = nil, respell: Bool = true, access: ClientAccess = ClientAccess()) throws -> SpeechJob {
+        guard access.allows(.speak) else { throw ChatterError.invalid("This client cannot submit speech.") }
         var request = try input.validated()
         if let requestID {
             guard !requestID.isEmpty, requestID.utf8.count <= 128 else { throw ChatterError.invalid("requestID must be 1–128 UTF-8 bytes.") }
-            if let existing = (jobs + archivedJobs).first(where: { $0.requestID == requestID }) {
+            if let existing = try history?.find(requestID: requestID, owner: access.ownerID) {
                 guard existing.request.text == request.text, existing.request.pace == request.pace, existing.request.mode == request.mode,
                       existing.request.effectiveTone == request.effectiveTone,
                       existing.request.dialogue == request.dialogue, existing.request.language == request.language, existing.request.instruction == request.instruction,
@@ -19,8 +20,14 @@ extension AppModel {
             }
         }
         guard activeJobs < settings.queueCapacity else { throw ChatterError.queueFull }
+        if let owner = access.ownerID {
+            guard jobs.count(where: { !$0.isTerminal && $0.clientID == owner }) < settings.clientQueueLimit,
+                  submissionRate.allow(owner, limit: 60) else { throw ChatterError.queueFull }
+        }
+        try checkStorageBudget()
         let matches = voices.filter { $0.id == request.voice || $0.name.caseInsensitiveCompare(request.voice) == .orderedSame }
         guard matches.count == 1, let voice = matches.first else { throw ChatterError.invalid("Choose a saved voice by its unique ID or unambiguous name.") }
+        guard access.allowsVoice(voice.id) else { throw ChatterError.invalid("This voice is not permitted for this client.") }
         let configuration = try voice.synthesisConfiguration.validated()
         if !configuration.kind.supportsInstructions, !(request.instruction ?? "").isEmpty {
             throw ChatterError.invalid(QwenCapabilities.cloneDeliveryNotice)
@@ -43,6 +50,7 @@ extension AppModel {
             job.dialogueTurns = try dialogue.turns.map { turn in
                 let matches=voices.filter { $0.id == dialogue.cast[turn.actor] || $0.name.caseInsensitiveCompare(dialogue.cast[turn.actor]!) == .orderedSame }
                 guard matches.count == 1, let actorVoice=matches.first else { throw ChatterError.invalid("Assign a unique saved voice to actor \(turn.actor).") }
+                guard access.allowsVoice(actorVoice.id) else { throw ChatterError.invalid("A dialogue voice is not permitted for this client.") }
                 let config=try actorVoice.synthesisConfiguration.validated()
                 let line=try SpeechRequest(voice:actorVoice.id,text:turn.text,tone:turn.tone ?? request.tone,language:turn.language ?? request.language,instruction:turn.instruction).validated()
                 if !config.kind.supportsInstructions, !(line.instruction ?? "").isEmpty { throw ChatterError.invalid("\(turn.actor): " + QwenCapabilities.cloneDeliveryNotice) }
@@ -52,10 +60,10 @@ extension AppModel {
             }
         }
         job.toneCue = request.effectiveTone.cue
-        job.sequence = nextSequence; job.requestID = requestID
+        job.sequence = nextSequence; job.requestID = requestID; job.clientID = access.ownerID
         if !respell { job.respell = false }
         job.expressive = false // Qwen receives delivery instructions directly; no external annotation pass.
-        try JobStore().save(job)
+        try history!.save(job)
         nextSequence += 1; jobs.insert(job, at: 0); drain(); return job
     }
     func cancelJob(_ id: String) {
@@ -84,6 +92,7 @@ extension AppModel {
         playback.stop()
         var output: URL?
         do {
+            try checkStorageBudget()
             guard let voice = voices.first(where: { $0.id == job.request.voice }) else { throw ChatterError.invalid("The voice profile is unavailable.") }
             // Old receipts retain their explicit single-take behavior after migration.
             let configuration = try (job.voiceConfiguration ?? voice.synthesisConfiguration).validated()
@@ -98,7 +107,7 @@ extension AppModel {
             output = destination
             if job.request.mode == "play" { playback.prepare(pace: Float(job.request.pace)) }
             change(id) { $0.state = "generating"; $0.message = "Generating speech…"; $0.attempts += 1 }
-            if let receipt = jobs.first(where: { $0.id == id }) { try JobStore().save(receipt) }
+            if let receipt = jobs.first(where: { $0.id == id }) { try history!.save(receipt) }
             let start = ContinuousClock.now
             // Preserve an already accepted legacy plan on restart, but never run Ollama for speech.
             let noted = job.expressionPlan?.annotate(job.request.text).text ?? job.request.text
@@ -114,13 +123,14 @@ extension AppModel {
                 "references":payload, "voiceConfiguration":object(configuration),
                 "language":job.request.language ?? configuration.language, "instruction":job.request.instruction ?? "",
                 "toneCue":job.request.effectiveTone.cue,"mode":job.request.mode,"pace":job.request.pace,
-                "quality":job.request.quality ?? "responsive","directory":directory.path,"output":destination.path]
+                "quality":job.request.quality ?? "responsive","directory":directory.path,"output":directory.appending(path: "speech.wav").path,
+                "maximumAudioSeconds":settings.maximumSpeechMinutes * 60, "maximumGenerationSeconds":settings.maximumGenerationMinutes * 60]
             if let turns=job.dialogueTurns {
                 var prepared=turns
                 for i in prepared.indices where job.respell != false { prepared[i].text = try pronunciations.respell(prepared[i].text,protecting:LeadingNote.ranges(in:prepared[i].text)) }
                 command["dialogueTurns"]=object(prepared);command["gapSeconds"]=job.request.dialogue?.gapSeconds ?? 0.35
             }
-            let result = try await engine.command(command) { [weak self] event in
+            let result = try await engine.command(command, timeout: Double(settings.maximumGenerationMinutes * 60)) { [weak self] event in
                 guard let self, self.jobs.first(where: { $0.id == id })?.state != "cancelled" else { return }
                 if event["event"] as? String == "chunk", let path = event["path"] as? String {
                     self.playback.enqueue(URL(filePath: path), pace: Float(job.request.pace))
@@ -131,8 +141,20 @@ extension AppModel {
                 } else if let message = event["message"] as? String { self.change(id) { $0.message = message } }
             }
             guard jobs.first(where: { $0.id == id })?.state != "cancelled" else { return }
+            let generated = directory.appending(path: "speech.wav")
+            guard (result["path"] as? String) == generated.path else { throw ChatterError.unavailable("Engine returned an unexpected output path.") }
+            if job.request.mode == "save" {
+                // The restricted helper writes only inside Jobs. Publish through an owner-only temporary file.
+                let partial = destination.appendingPathExtension("partial")
+                do {
+                    try FileManager.default.copyItem(at: generated, to: partial)
+                    try PrivateStorage.protectFile(partial)
+                    try FileManager.default.moveItem(at: partial, to: destination)
+                    try FileManager.default.removeItem(at: generated)
+                } catch { try? FileManager.default.removeItem(at: partial); throw error }
+            }
             change(id) {
-                $0.path = result["path"] as? String; $0.elapsedSeconds = result["elapsedSeconds"] as? Double
+                $0.path = destination.path; $0.elapsedSeconds = result["elapsedSeconds"] as? Double
                 $0.duration = result["duration"] as? Double; $0.profile = result["profile"] as? String
                 $0.sampleRate = result["sampleRate"] as? Int; $0.modelID = result["modelID"] as? String
                 $0.engineName = QwenCapabilities.engine
@@ -147,6 +169,7 @@ extension AppModel {
             if let output { try? FileManager.default.removeItem(atPath: output.path + ".partial") }
         }
         persistJob(id)
+        trimHistory()
     }
     private func removePlaybackChunks(_ id: String) {
         let directory = ChatterPaths.jobs.appending(path: id)
@@ -157,31 +180,18 @@ extension AppModel {
     }
     func archiveFinishedJobs() {
         do {
-            let archive = ChatterPaths.root.appending(path: "ArchivedReceipts")
-            try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
-            settings.nextJobSequence = nextSequence; saveSettings()
-            for job in jobs where job.isTerminal {
-                let source = ChatterPaths.root.appending(path: "Queue/\(job.id).json")
-                let destination = archive.appending(path: job.id + ".json")
-                try FileManager.default.moveItem(at: source, to: destination)
-                archivedJobs.append(job)
-            }
-            let archivedIDs = Set(archivedJobs.map(\.id))
-            jobs.removeAll { archivedIDs.contains($0.id) }
-            notice = "Finished activity archived. WAV files and voice recordings are preserved."
-        } catch {
-            let archivedIDs = Set(archivedJobs.map(\.id))
-            jobs.removeAll { archivedIDs.contains($0.id) }
-            self.error = error.localizedDescription
-        }
+            try history?.archiveFinished()
+            jobs.removeAll { $0.isTerminal }
+            notice = "Finished activity archived. Retention preferences still apply."
+        } catch { self.error = error.localizedDescription }
     }
     func persistJob(_ id: String) {
         guard let job = jobs.first(where: { $0.id == id }) else { return }
-        do { try JobStore().save(job) } catch { self.error = "Queue persistence failed: \(error.localizedDescription)" }
+        do { try history!.save(job) } catch { self.error = "Queue persistence failed: \(error.localizedDescription)" }
     }
     func persistJobs() {
         do {
-            for job in jobs { try JobStore().save(job) }
+            for job in jobs { try history!.save(job) }
         } catch { self.error = "Queue persistence failed: \(error.localizedDescription)" }
     }
 }

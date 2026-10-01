@@ -4,7 +4,16 @@ public struct Settings: Codable, Sendable {
     public var outputDirectory = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Chatter/Audio").path
     public var port = 18423
     public var queueCapacity = 1000
-    public var allowLAN = true
+    public var allowLAN = false
+    public var lanPort = 18424
+    public var securityVersion = 1
+    public var deleteExpiredAudio = false
+    public var retentionDays = 30
+    public var retainedJobLimit = 1000
+    public var storageLimitGB = 20
+    public var maximumSpeechMinutes = 30
+    public var maximumGenerationMinutes = 60
+    public var clientQueueLimit = 100
     public var launchAtLogin = true
     public var liveQuality = "responsive"
     public var defaultPace = 1.0
@@ -21,6 +30,7 @@ public struct Settings: Codable, Sendable {
     public var ollamaAddress = OllamaClient.defaultAddress
     public init() {}
     private enum CodingKeys: String, CodingKey {
+        case lanPort, securityVersion, deleteExpiredAudio, retentionDays, retainedJobLimit, storageLimitGB, maximumSpeechMinutes, maximumGenerationMinutes, clientQueueLimit
         case outputDirectory, port, queueCapacity, allowLAN, launchAtLogin, liveQuality, defaultPace, defaultVoiceID, nextJobSequence, studioTone, keepStudioLoaded
         case expressionModel, expressionNotesInStudio, expressionNotesForRequests, ollamaAddress
     }
@@ -30,7 +40,18 @@ public struct Settings: Codable, Sendable {
         outputDirectory = try values.decodeIfPresent(String.self, forKey: .outputDirectory) ?? outputDirectory
         port = try values.decodeIfPresent(Int.self, forKey: .port) ?? port
         queueCapacity = try values.decodeIfPresent(Int.self, forKey: .queueCapacity) ?? queueCapacity
-        allowLAN = try values.decodeIfPresent(Bool.self, forKey: .allowLAN) ?? allowLAN
+        // Existing plaintext LAN configurations require explicit consent to the new secure connection.
+        securityVersion = try values.decodeIfPresent(Int.self, forKey: .securityVersion) ?? 0
+        allowLAN = securityVersion >= 1 ? (try values.decodeIfPresent(Bool.self, forKey: .allowLAN) ?? false) : false
+        securityVersion = 1
+        lanPort = try values.decodeIfPresent(Int.self, forKey: .lanPort) ?? lanPort
+        deleteExpiredAudio = try values.decodeIfPresent(Bool.self, forKey: .deleteExpiredAudio) ?? false
+        retentionDays = min(365, max(1, try values.decodeIfPresent(Int.self, forKey: .retentionDays) ?? retentionDays))
+        retainedJobLimit = min(10000, max(100, try values.decodeIfPresent(Int.self, forKey: .retainedJobLimit) ?? retainedJobLimit))
+        storageLimitGB = min(1000, max(1, try values.decodeIfPresent(Int.self, forKey: .storageLimitGB) ?? storageLimitGB))
+        maximumSpeechMinutes = min(120, max(1, try values.decodeIfPresent(Int.self, forKey: .maximumSpeechMinutes) ?? maximumSpeechMinutes))
+        maximumGenerationMinutes = min(240, max(1, try values.decodeIfPresent(Int.self, forKey: .maximumGenerationMinutes) ?? maximumGenerationMinutes))
+        clientQueueLimit = min(1000, max(1, try values.decodeIfPresent(Int.self, forKey: .clientQueueLimit) ?? clientQueueLimit))
         launchAtLogin = try values.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? launchAtLogin
         liveQuality = try values.decodeIfPresent(String.self, forKey: .liveQuality) ?? liveQuality
         studioTone = try values.decodeIfPresent(String.self, forKey: .studioTone) ?? studioTone
@@ -57,13 +78,12 @@ public enum ChatterPaths {
     public static var models: URL { root.appending(path: "Models") }
     public static func makeDirectories() throws {
         for path in [root, voices, jobs, root.appending(path: "Logs")] {
-            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try PrivateStorage.directory(path)
         }
     }
     public static func save<T: Encodable>(_ value: T, to url: URL) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(value).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try PrivateStorage.write(encoder.encode(value), to: url)
     }
     public static func load<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {
         try JSONDecoder().decode(type, from: Data(contentsOf: url))

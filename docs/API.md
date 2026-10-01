@@ -1,6 +1,14 @@
 # Chatter 3 API
 
-All routes require `Authorization: Bearer TOKEN`. Read the token locally without printing it. Default origin is `http://127.0.0.1:18423`; enable LAN access in Preferences for remote clients. Browser Origin requests are rejected. Use HTTPS for networks you do not trust.
+All routes require `Authorization: Bearer TOKEN`. Read tokens without printing or logging them. Local access is `http://127.0.0.1:18423`; the local administrator token is accepted only there. LAN access is disabled by default. Enable it in Connections to serve `https://HOST:18424`, verify the displayed certificate SHA-256 fingerprint, and create an expiring client token. The portable plugin accepts `CHATTER_TLS_SHA256`; it refuses plaintext remote URLs. Browser Origin requests are rejected.
+
+Each client has read/speak/cancel scopes and optional voice restrictions. Clients can retrieve or cancel only their own jobs; inaccessible jobs return 404. Expired/revoked tokens return 401; missing REST permissions return 403. MCP tool permission failures use the normal `isError` result. Client secrets are shown once; only their hashes are persisted. The local administrator can inspect all jobs. Revocation cancels the client's active requests.
+
+Local and LAN listeners use different ports and separate connection pools. TLS 1.2 or later is required. The generated certificate is valid for one year: use Replace LAN identity and update client fingerprints before expiry. Do not bypass certificate verification. Generic HTTPS clients can explicitly trust an exported certificate and connect using its `localhost` hostname through a local tunnel; use the fingerprint-aware plugin for direct LAN connections.
+
+Limits: 2 MB HTTP bodies, 16 KiB headers, 100,000 UTF-8 bytes of speech, 600 requests/minute per credential, 60 new jobs/minute per scoped client, and a default 100 queued jobs/client. Queue and rate refusal returns 429 with Retry-After. Storage/unavailability refusal returns 503. A valid retained requestID retry returns the original job before submission-capacity checks. Retry keys are scoped by client ID. The global FIFO queue defaults to 1,000 active jobs.
+
+Defaults: maximum audio 30 minutes/job, maximum generation 60 minutes/job, storage budget 20 GB, and at least 1 GB disk reserve plus working space. These limits are configurable in General preferences. History retains up to 1,000 finished jobs for 30 days, including archived jobs. Active jobs do not expire. WAVs are preserved unless automatic deletion is enabled. Copy narration outside the output directory for permanent retention when using automatic deletion. After a receipt expires, its audio route and retry key are no longer available.
 
 ## Discovery
 

@@ -19,6 +19,7 @@ final class SpeechEngine {
     @ObservationIgnored private var reader: Task<Void, Never>?
     @ObservationIgnored private var restartTask: Task<Void, Never>?
     @ObservationIgnored private var watchdog: Task<Void, Never>?
+    @ObservationIgnored private var validationTask: Task<Void, Never>?
     @ObservationIgnored private var pending: [String: Pending] = [:]
     @ObservationIgnored private var stopping = false
     @ObservationIgnored private var failures = 0
@@ -44,6 +45,21 @@ final class SpeechEngine {
     }
 
     func start() {
+        guard process == nil, validationTask == nil else { return }
+        guard ModelInstaller().isInstalled else { state = "not installed"; detail = "Download the speech models in Engine settings."; return }
+        state = "verifying"; detail = "Verifying installed speech models…"
+        validationTask = Task { [weak self] in
+            do {
+                try await ModelInstaller().verifyInstalled(integrityCacheURL: ChatterPaths.root.appending(path: "model-integrity.json"))
+                guard !Task.isCancelled, let self else { return }
+                self.validationTask = nil; self.launchVerified()
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.validationTask = nil; self.state = "error"; self.detail = "Model integrity check failed. Download / repair models in Engine settings."
+            }
+        }
+    }
+    private func launchVerified() {
         guard process == nil else { return }
         stopping = false
         guard ModelInstaller().isInstalled else {
@@ -58,9 +74,16 @@ final class SpeechEngine {
             try rotateLogIfNeeded(logURL)
             if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
             let log = try FileHandle(forWritingTo: logURL); try log.seekToEnd()
-            p.executableURL = executable
-            var env = ProcessInfo.processInfo.environment
+            let cache = ChatterPaths.root.appending(path: "EngineCache")
+            try PrivateStorage.directory(cache)
+            let temporary = cache.appending(path: "Temporary")
+            try PrivateStorage.directory(temporary)
+            guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { throw ChatterError.unavailable("The macOS engine isolation service is unavailable.") }
+            p.executableURL = URL(filePath: "/usr/bin/sandbox-exec")
+            p.arguments = ["-p", EngineSandbox.profile(root: ChatterPaths.root, bundle: Bundle.main.bundleURL), executable.path]
+            var env = ProcessInfo.processInfo.environment.filter { ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"].contains($0.key) }
             env["CHATTER_DATA_ROOT"] = ChatterPaths.root.path
+            env["TMPDIR"] = temporary.path + "/"
             env["CHATTER_KEEP_STUDIO"] = keepStudioLoaded ? "1" : "0"
             p.environment = env; p.standardInput = stdin; p.standardOutput = stdout; p.standardError = log
             p.qualityOfService = .userInitiated
@@ -133,11 +156,19 @@ final class SpeechEngine {
         }
     }
 
-    func command(_ value: [String: Any], onEvent: @escaping ([String: Any]) -> Void = { _ in }) async throws -> [String: Any] {
+    func command(_ value: [String: Any], timeout: Double = 3600, onEvent: @escaping ([String: Any]) -> Void = { _ in }) async throws -> [String: Any] {
         guard ready, input != nil else { throw ChatterError.unavailable(detail) }
         let id = value["id"] as? String ?? UUID().uuidString
         var payload = value; payload["id"] = id
         let data = try JSONSerialization.data(withJSONObject: payload) + Data([10])
+        let deadline = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled, let self, self.pending[id] != nil else { return }
+            self.cancel(id)
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled, self.pending[id] != nil { self.recover(reason: "Generation time limit reached; restarting the engine.") }
+        }
+        defer { deadline.cancel() }
         let result: Data = try await withCheckedThrowingContinuation { continuation in
             pending[id] = Pending(continuation: continuation, event: onEvent)
             do { try input?.write(contentsOf: data) }
@@ -160,7 +191,7 @@ final class SpeechEngine {
     }
 
     func stop() {
-        stopping = true; restartTask?.cancel(); reader?.cancel(); watchdog?.cancel()
+        stopping = true; restartTask?.cancel(); reader?.cancel(); watchdog?.cancel(); validationTask?.cancel(); validationTask = nil
         try? input?.close(); input = nil
         if let p = process, p.isRunning { p.terminate() }
         process = nil; state = "stopped"; detail = "Engine stopped"; loadedProfiles = []; footprintBytes = nil

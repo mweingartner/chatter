@@ -36,15 +36,16 @@ Add a server with command `/Applications/Chatter.app/Contents/MacOS/chatter-mcp`
 
 For another computer, add environment variables:
 
-- `CHATTER_URL=http://chatter-host.local:18423` (or its LAN IP)
+- `CHATTER_URL=https://chatter-host.local:18424` (or its LAN IP)
 - `CHATTER_TOKEN_FILE=/absolute/path/to/private-token-file`
+- `CHATTER_TLS_SHA256=<64 hexadecimal characters verified in Chatter Connections>`
 
-Copy the token using Chatter → Connections. Store it in a local file readable only by that account (`chmod 600`). `CHATTER_TOKEN` is supported as an environment variable when the client securely manages it. Never put the token in a URL or commit it.
+Create a scoped client token using Chatter → Connections. The local administrator token is not accepted on the LAN listener. Verify the certificate fingerprint on the host Mac before copying it into the client configuration. Store it in a local file readable only by that account (`chmod 600`). `CHATTER_TOKEN` is supported as an environment variable when the client securely manages it. Never put the token in a URL or commit it.
 
 ## Streamable HTTP MCP
 
-URL `http://HOST:18423/mcp`; Authorization header `Bearer TOKEN`. JSON responses, stateless sessions, and protocol versions 2025-03-26, 2025-06-18, 2025-11-25. The server returns 405 to GET because it does not offer a persistent SSE notification channel. Tools return job IDs promptly instead of keeping model generation inside an HTTP request.
+URL `https://HOST:18424/mcp`; Authorization header `Bearer CLIENT_TOKEN`. Use the fingerprint-aware bridge unless the native HTTP client can explicitly verify/trust the generated certificate. Never disable certificate verification. JSON responses, stateless sessions, and protocol versions 2025-03-26, 2025-06-18, 2025-11-25. The server returns 405 to GET because it does not offer a persistent SSE notification channel. Tools return job IDs promptly instead of keeping model generation inside an HTTP request.
 
 Browser/mobile ChatGPT is outside this local Work setup. It needs a separately registered reachable MCP connection, as described in OpenAI's [ChatGPT connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt). The local plugin does not expose Chatter publicly.
 
-HTTP bearer authentication is intended for a trusted LAN. Use TLS through a private HTTPS proxy if the network is untrusted. Chatter rejects browser Origin requests and does not enable CORS.
+LAN access uses Chatter's native HTTPS listener and a scoped client credential. Verify and configure the certificate fingerprint shown in Connections; the bridge rejects remote plaintext HTTP. Chatter rejects browser Origin requests and does not enable CORS.

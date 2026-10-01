@@ -12,17 +12,31 @@ struct ConnectionsView: View {
                 Surface {
                     Label(model.serverStatus, systemImage: "network").font(.headline)
                     Toggle("Allow devices on my local network", isOn: $model.settings.allowLAN)
-                    HStack { TextField("Port", value: $model.settings.port, format: .number.grouping(.never)).frame(width: 180); Button("Apply connection settings") { model.applyNetwork() } }
+                    HStack {
+                        LabeledContent("Local port") { TextField("Local port", value: $model.settings.port, format: .number.grouping(.never)).labelsHidden() }
+                        LabeledContent("LAN HTTPS port") { TextField("LAN HTTPS port", value: $model.settings.lanPort, format: .number.grouping(.never)).labelsHidden() }
+                        Button("Apply connection settings") { model.applyNetwork() }
+                    }
+                    if model.settings.allowLAN {
+                        LabeledContent("LAN HTTPS port", value: String(model.settings.lanPort))
+                        Text(model.tlsFingerprint).font(.caption.monospaced()).textSelection(.enabled).accessibilityLabel("TLS certificate SHA-256 fingerprint")
+                        HStack {
+                            Button("Copy certificate fingerprint") { model.copyFingerprint() }
+                            Button("Replace LAN identity") { model.replaceLANIdentity() }
+                        }
+                        Text("The certificate is valid for one year. Replace it here and update client fingerprints before expiry.").font(.caption).foregroundStyle(.secondary)
+                    }
                     Divider()
                     LabeledContent("Local API", value: "http://127.0.0.1:\(model.settings.port)/v1")
                     LabeledContent("Local MCP", value: "http://127.0.0.1:\(model.settings.port)/mcp")
                     LabeledContent("LAN host", value: Host.current().localizedName ?? "Use this Mac's IP address")
                     HStack { Button("Copy connection token", systemImage: "key") { model.copyToken() }; Button("Replace token") { do { try model.rotateToken(); model.notice = "New token created. Update connections on other devices." } catch { model.error = error.localizedDescription } } }
-                    Text("All requests require a bearer token. Playback happens on this Mac. Other devices can download completed WAVs using the job's audio URL. HTTP is for your trusted LAN; use an HTTPS proxy on untrusted networks.").font(.caption).foregroundStyle(.secondary)
+                    Text("The local token works only on this Mac. LAN connections require HTTPS and a client token created below. Verify the certificate fingerprint on each connecting device. Playback happens on this Mac.").font(.caption).foregroundStyle(.secondary)
                 }
+                ClientConnectionsView()
                 Surface {
                     Text("Portable MCP plugin").font(.headline)
-                    Text("The Chatter plugin connects over stdio and forwards requests to this app. On another computer, set CHATTER_URL and provide a token file. Clients with native HTTP MCP support can connect directly to /mcp.").foregroundStyle(.secondary)
+                    Text("The Chatter plugin connects over stdio and forwards requests to this app. On another computer, set CHATTER_URL to the HTTPS address, CHATTER_TLS_SHA256 to the verified fingerprint, and provide a client token file. Clients with native HTTP MCP support can connect directly to /mcp.").foregroundStyle(.secondary)
                     HStack {
                         Button("Open integration files", systemImage: "folder") {
                             let bundled = Bundle.main.resourceURL?.appending(path: "Integration")
@@ -100,13 +114,23 @@ struct GeneralView: View {
                     HStack { Text("Default pace"); Slider(value: $model.settings.defaultPace, in: 0.5...2, step: 0.05); Text(model.settings.defaultPace.formatted(.number.precision(.fractionLength(2))) + "×").monospacedDigit() }
                     Stepper("Queue capacity: \(model.settings.queueCapacity) requests", value: $model.settings.queueCapacity, in: 100...10000, step: 100)
                     Text("Accepted requests are saved before acknowledgement and processed in order, including after a restart.").font(.caption).foregroundStyle(.secondary)
+                    Divider()
+                    Stepper("Keep finished jobs for \(model.settings.retentionDays) days", value: $model.settings.retentionDays, in: 1...365)
+                    Stepper("Keep at most \(model.settings.retainedJobLimit) finished jobs", value: $model.settings.retainedJobLimit, in: 100...10000, step: 100)
+                    Stepper("Audio storage budget: \(model.settings.storageLimitGB) GB", value: $model.settings.storageLimitGB, in: 1...1000)
+                    Stepper("Maximum speech per job: \(model.settings.maximumSpeechMinutes) minutes", value: $model.settings.maximumSpeechMinutes, in: 1...120)
+                    Stepper("Generation time limit: \(model.settings.maximumGenerationMinutes) minutes", value: $model.settings.maximumGenerationMinutes, in: 1...240)
+                    Stepper("Queued jobs per client: \(model.settings.clientQueueLimit)", value: $model.settings.clientQueueLimit, in: 1...1000)
+                    Toggle("Also delete original audio when jobs expire", isOn: $model.settings.deleteExpiredAudio)
+                    Text("History expires at the limits above. Exported WAVs are kept unless automatic audio deletion is enabled; kept files still count toward the storage budget. To preserve a file when deletion is enabled, copy it outside the output folder. Voice recordings are preserved. Clients may submit 60 jobs and make 600 API requests per minute.").font(.caption).foregroundStyle(.secondary)
+                    Button("Clean up expired jobs now") { model.trimHistory() }
                     Button("Save preferences") { model.saveSettings(); model.persistJobs(); model.notice = "Preferences saved." }.buttonStyle(.borderedProminent)
                 }
                 Surface {
                     Text("Private by design").font(.headline)
                     Text("Voice recordings, transcripts, model weights, and generated audio live on this Mac. Downloads install the speech models; synthesis and transcription run locally. Your network token is stored in a file readable only by your user account.").foregroundStyle(.secondary)
                     Button("Open Chatter data folder", systemImage: "folder") { NSWorkspace.shared.open(ChatterPaths.root) }
-                    Text("Chatter 3.0 • Local Qwen3-TTS • Apache 2.0 model license").font(.caption).foregroundStyle(.secondary)
+                    Text("Chatter \(AppModel.appVersion) • Local Qwen3-TTS • Apache 2.0 model license").font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(30)
         }

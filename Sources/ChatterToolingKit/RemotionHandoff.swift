@@ -91,7 +91,7 @@ public struct ChatterServiceJobSource: ChatterJobSource {
     private let environment: [String: String]
     private let home: URL
     private let forwarder: ChatterMCPForwarder
-    private let http = ChatterHTTPSession(timeout: Self.downloadTimeout)
+    private let http: ChatterHTTPSession
 
     public init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -100,6 +100,7 @@ public struct ChatterServiceJobSource: ChatterJobSource {
         self.environment = environment
         self.home = home
         forwarder = ChatterMCPForwarder(environment: environment, home: home)
+        http = ChatterHTTPSession(timeout: Self.downloadTimeout, tlsFingerprint: environment["CHATTER_TLS_SHA256"])
     }
 
     public func job(id: String) async throws -> JSONObject {

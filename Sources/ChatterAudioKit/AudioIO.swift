@@ -1,6 +1,7 @@
 // Native audio services for Chatter (AVFoundation, Accelerate, Speech).
 import AVFoundation
 import Foundation
+import ChatterCore
 import os
 
 /// Decoding, resampling and 24-bit WAV writing for Chatter's 44.1 kHz mono pipeline.
@@ -19,7 +20,7 @@ public enum AudioIO {
     /// converted with AVAudioConverter's mastering-quality resampler, drained to end of stream.
     public static func readMono44k(_ url: URL) throws -> [Float] { try readMono(url, sampleRate: 44100) }
 
-    public static func readMono(_ url: URL, sampleRate: Double) throws -> [Float] {
+    public static func readMono(_ url: URL, sampleRate: Double, maximumSeconds: Double = 7200) throws -> [Float] {
         guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
             throw ChatterAudioError.undecodable(reason: "The file \(url.lastPathComponent) does not exist.")
         }
@@ -30,8 +31,14 @@ public enum AudioIO {
             throw ChatterAudioError.undecodable(reason: error.localizedDescription)
         }
         let format = file.processingFormat
+        guard maximumSeconds.isFinite, maximumSeconds > 0, maximumSeconds <= 7200,
+              format.sampleRate.isFinite, (8000...192000).contains(format.sampleRate),
+              sampleRate.isFinite, (8000...192000).contains(sampleRate),
+              file.length >= 0, Double(file.length) <= maximumSeconds * format.sampleRate else {
+            throw ChatterAudioError.unsupportedDuration
+        }
         let channels = Int(format.channelCount)
-        guard channels > 0, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
+        guard (1...8).contains(channels), format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
               let chunk = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: readChunkFrames) else {
             throw ChatterAudioError.undecodable(reason: "Unsupported audio layout.")
         }
@@ -55,6 +62,7 @@ public enum AudioIO {
             guard let data = chunk.floatChannelData else {
                 throw ChatterAudioError.undecodable(reason: "Unsupported audio layout.")
             }
+            guard mono.count + frames <= Int(maximumSeconds * format.sampleRate) else { throw ChatterAudioError.unsupportedDuration }
             try appendDownmix(data, channels: channels, frames: frames, to: &mono)
         }
         guard !mono.isEmpty else { throw ChatterAudioError.emptyOrInvalidSamples }
@@ -202,7 +210,7 @@ enum AtomicFile {
     static func write(_ data: Data, to url: URL) throws {
         let temporary = temporaryURL(beside: url)
         do {
-            try data.write(to: temporary)
+            try PrivateStorage.write(data, to: temporary)
         } catch {
             throw ChatterAudioError.writeFailed(reason: error.localizedDescription)
         }
@@ -236,6 +244,7 @@ enum AtomicFile {
         let temporary = temporaryURL(beside: destination)
         do {
             try FileManager.default.copyItem(at: source, to: temporary)
+            try PrivateStorage.protectFile(temporary)
         } catch {
             throw ChatterAudioError.writeFailed(reason: error.localizedDescription)
         }

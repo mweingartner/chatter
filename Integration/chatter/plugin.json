@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "chatter",
-  "version": "3.0.2",
+  "version": "3.1.0",
   "description": "Local Qwen3-TTS voices, expressive speech, voice design and multi-actor dialogue for video narration.",
   "author": {
     "name": "Michael Weingartner"

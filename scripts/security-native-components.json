@@ -1,0 +1,19 @@
+[
+  {
+    "name": "fmt",
+    "url": "https://github.com/fmtlib/fmt",
+    "revision": "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+    "version": "12.1.0"
+  },
+  {
+    "name": "nlohmann-json",
+    "url": "https://github.com/nlohmann/json",
+    "revision": "9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03",
+    "version": "3.11.3"
+  },
+  {
+    "name": "BoringSSL",
+    "url": "https://boringssl.googlesource.com/boringssl",
+    "revision": "0226f30467f540a3f62ef48d453f93927da199b6"
+  }
+]

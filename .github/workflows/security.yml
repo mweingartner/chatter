@@ -1,0 +1,39 @@
+name: Security
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 13 * * 1'
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Audit vendored integrity, source contents and advisories
+        run: python3 scripts/security-audit.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: security-and-sbom
+          path: artifacts/security-audit/
+          retention-days: 14
+  tests:
+    if: github.event_name != 'schedule'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Test native code and security boundaries
+        run: swift test --jobs 2
+      - name: Require credentials before production packaging
+        run: |
+          if scripts/package-release.sh > /tmp/release-gate.log 2>&1; then
+            echo 'Production packaging incorrectly accepted an unsigned release.'
+            exit 1
+          fi
+          grep -q 'Production packaging requires' /tmp/release-gate.log

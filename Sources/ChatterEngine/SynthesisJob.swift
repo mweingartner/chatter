@@ -23,6 +23,7 @@ struct SynthesisJob {
         let profile = SpeechProfile(rawValue: quality.modelProfile(for: voice.kind, mode: c.mode))!
         let (directory,output)=try paths()
         let start=ContinuousClock.now
+        let deadline = start + .seconds(min(14400, max(1, c.maximumGenerationSeconds ?? 3600)))
         if profile == .quality, !engine.loadedProfiles.contains("quality") { engine.send(c.id,"progress",["message":"Loading the studio voice model…"]) }
         let model=try engine.model(profile)
         let conditioning=voice.kind == .cloned ? try engine.conditioning(c.references,profile:profile,language:language) : nil
@@ -32,11 +33,12 @@ struct SynthesisJob {
         let seed=c.seed ?? UInt64.random(in:0...UInt64(UInt32.max)); MLXRandom.seed(seed)
         let paced=abs(c.pace-1)>0.0001
         let unpaced=directory.appending(path:"unpaced.wav")
-        let writer=try WAVStreamWriter(url:paced ? unpaced : output,sampleRate:24000)
+        let writer=try WAVStreamWriter(url:paced ? unpaced : output,sampleRate:24000,maximumSeconds: min(7200, max(1,c.maximumAudioSeconds ?? 1800)) * c.pace)
         var complete=false
         defer { if !complete { writer.cancel(); try? FileManager.default.removeItem(at:output) } }
         var firstAudio:Double?, chunks=0,frames=0
         func deliver(_ samples:[Float]) throws {
+            guard ContinuousClock.now < deadline else { throw EngineFailure.failed("Generation time limit reached.") }
             try checkCancelled()
             try writer.append(Self.validated(samples))
             if c.mode == "play" {
@@ -60,7 +62,7 @@ struct SynthesisJob {
                 let output = envelope.append(try Self.validated(samples))
                 if !output.isEmpty { try deliver(output) }
             }
-            let audio=try model.generateVoiceDesign(text:passage.text,instruct:prompt,language:language,conditioning:conditioning,refAudio:nil,refText:nil,temperature:Float(c.temperature ?? 0.7),topK:50,topP:0.8,repetitionPenalty:1.05,minP:0,maxTokens:2048,streamingInterval:0.8,onToken:{ _ in frames+=1;engine.noteActivity() },onAudioChunk:responsive ? { try deliverPassage($0.asArray(Float.self)) } : nil,isCancelled:{ engine.isCancelled(c.id) })
+            let audio=try model.generateVoiceDesign(text:passage.text,instruct:prompt,language:language,conditioning:conditioning,refAudio:nil,refText:nil,temperature:Float(c.temperature ?? 0.7),topK:50,topP:0.8,repetitionPenalty:1.05,minP:0,maxTokens:2048,streamingInterval:0.8,onToken:{ _ in frames+=1;engine.noteActivity() },onAudioChunk:responsive ? { try deliverPassage($0.asArray(Float.self)) } : nil,isCancelled:{ engine.isCancelled(c.id) || ContinuousClock.now >= deadline })
             if responsive {
                 let tail = envelope.finish()
                 if !tail.isEmpty { try deliver(tail) }

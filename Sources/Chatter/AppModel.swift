@@ -12,7 +12,12 @@ final class AppModel {
     /// `pronunciations` in display order, kept sorted so long lists redraw cheaply.
     private(set) var sortedPronunciations: [Pronunciation] = []
     var jobs: [SpeechJob] = []
-    @ObservationIgnored var archivedJobs: [SpeechJob] = []
+    @ObservationIgnored var history: JobDatabase?
+    var clients: [ClientCredential] = []
+    var tlsFingerprint = ""
+    @ObservationIgnored var requestRate = ClientRateLimiter()
+    @ObservationIgnored var submissionRate = ClientRateLimiter()
+    @ObservationIgnored var maintenanceTask: Task<Void, Never>?
     /// Optional local models for on-demand pronunciation suggestions.
     var ollamaModels: [OllamaModel] = []
     var expressionStatus: ExpressionStatus = .checking
@@ -26,13 +31,15 @@ final class AppModel {
     let engine = SpeechEngine()
     let playback = AudioPlayback()
     @ObservationIgnored let server = HTTPServer()
+    @ObservationIgnored let lanServer = HTTPServer()
     @ObservationIgnored var processing = false
     @ObservationIgnored var nextSequence: UInt64 = 1
     @ObservationIgnored private var token = ""
     @ObservationIgnored var installTask: Task<Void, Never>?
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var instanceLock: InstanceLock?
     @ObservationIgnored var selectedPage = "studio"
-    var activeJobs: Int { jobs.count { !$0.isTerminal } }
+    var activeJobs: Int { (try? history?.activeCount()) ?? jobs.count { !$0.isTerminal } }
     /// The studio model stays loaded when asked to, or when studio is the default live quality
     /// (so live studio speech never waits for a model load).
     var keepStudioResident: Bool { settings.keepStudioLoaded || settings.liveQuality == "studio" }
@@ -51,42 +58,50 @@ final class AppModel {
         guard !started else { return }; started = true
         do {
             try ChatterPaths.makeDirectories()
+            instanceLock = try InstanceLock(root: ChatterPaths.root)
             let settingsURL = ChatterPaths.root.appending(path: "settings.json")
             if FileManager.default.fileExists(atPath: settingsURL.path) { settings = try ChatterPaths.load(Settings.self, from: settingsURL) }
             let voicesURL = ChatterPaths.root.appending(path: "voices.json")
             voices = try DefaultVoices.loadOrCreate(at: voicesURL)
             loadPronunciations()
-            jobs = try JobStore().load()
-            archivedJobs = try JobStore(directory: ChatterPaths.root.appending(path: "ArchivedReceipts")).load()
-            nextSequence = max(settings.nextJobSequence, ((jobs + archivedJobs).map(\.sequence).max() ?? 0) + 1)
+            history = try JobDatabase()
+            jobs = try history!.recent(limit: settings.retainedJobLimit)
+            nextSequence = max(settings.nextJobSequence, try history!.maximumSequence() + 1)
+            let clientsURL = ChatterPaths.root.appending(path: "clients.json")
+            if FileManager.default.fileExists(atPath: clientsURL.path) { clients = try ChatterPaths.load([ClientCredential].self, from: clientsURL) }
             for i in jobs.indices where !jobs[i].isTerminal {
                 jobs[i].state = "queued"; jobs[i].message = "Restored after app restart"
-                try JobStore().save(jobs[i])
+                try history?.save(jobs[i])
             }
             try loadToken()
-            try FileManager.default.createDirectory(atPath: settings.outputDirectory, withIntermediateDirectories: true)
-            server.route = { [weak self] request in await self?.route(request) ?? HTTPResponse(status: 503) }
+            try prepareOutputDirectory()
+            for listener in [server, lanServer] {
+                listener.route = { [weak self] request in await self?.route(request) ?? HTTPResponse(status: 503) }
+                listener.authorizeHeaders = { [weak self] request in self?.rejectHeaders(request) ?? (self == nil ? HTTPResponse(status: 503) : nil) }
+            }
             server.onError = { [weak self] message in self?.serverStatus = "Error: \(message)"; self?.error = message }
+            lanServer.onError = server.onError
             playback.onError = { [weak self] message in self?.error = message }
             engine.onReady = { [weak self] in
                 guard let self else { return }
                 self.drain()
                 Task { await self.warmVoices(); await self.importLucyIfNeeded() }
             }
-            applyNetwork(); engine.keepStudioLoaded = keepStudioResident; engine.start()
+            applyNetwork(); startMaintenance(); engine.keepStudioLoaded = keepStudioResident; engine.start()
             if Bundle.main.bundleURL.pathExtension == "app", settings.launchAtLogin {
                 do { try SMAppService.mainApp.register() } catch { notice = "Login startup needs attention in General settings: \(error.localizedDescription)" }
             }
         } catch { self.error = error.localizedDescription }
     }
-    func stop() { installTask?.cancel(); engine.stop(); playback.stop(); server.stop() }
+    func stop() { installTask?.cancel(); engine.stop(); playback.stop(); server.stop(); lanServer.stop(); maintenanceTask?.cancel(); instanceLock = nil }
     func saveSettings() {
         do {
             guard (1024...65535).contains(settings.port) else { throw ChatterError.invalid("Port must be between 1024 and 65535.") }
+            guard (1024...65535).contains(settings.lanPort), settings.lanPort != settings.port else { throw ChatterError.invalid("Use distinct local and LAN ports from 1024 to 65535.") }
             guard (100...10000).contains(settings.queueCapacity) else { throw ChatterError.invalid("Queue capacity must be between 100 and 10,000.") }
             guard settings.outputDirectory.hasPrefix("/") else { throw ChatterError.invalid("Choose an absolute output folder.") }
             _ = try OllamaClient.validatedAddress(settings.ollamaAddress)
-            try FileManager.default.createDirectory(atPath: settings.outputDirectory, withIntermediateDirectories: true)
+            try prepareOutputDirectory()
             try ChatterPaths.save(settings, to: ChatterPaths.root.appending(path: "settings.json"))
             engine.configure(keepStudioLoaded: keepStudioResident)
         } catch { self.error = error.localizedDescription }
@@ -99,14 +114,21 @@ final class AppModel {
     }
     func applyNetwork() {
         do {
-            try server.start(port: settings.port, allowLAN: settings.allowLAN)
-            serverStatus = settings.allowLAN ? "Local and LAN • port \(settings.port)" : "This Mac • port \(settings.port)"
+            try server.start(port: settings.port, allowLAN: false)
+            lanServer.stop()
+            if settings.allowLAN {
+                guard settings.lanPort != settings.port else { throw ChatterError.invalid("Local and LAN ports must differ.") }
+                let identity = try LocalTLSIdentity.load(directory: ChatterPaths.root.appending(path: "TLS"))
+                tlsFingerprint = identity.fingerprint
+                try lanServer.start(port: settings.lanPort, allowLAN: true, identity: identity.identity)
+            }
+            serverStatus = settings.allowLAN ? "Local HTTP • \(settings.port) · LAN HTTPS • \(settings.lanPort)" : "This Mac • port \(settings.port)"
             saveSettings()
         } catch { self.error = error.localizedDescription; serverStatus = "Unavailable" }
     }
     private func loadToken() throws {
         let url = ChatterPaths.root.appending(path: "api-token")
-        if FileManager.default.fileExists(atPath: url.path) { token = try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) }
+        if FileManager.default.fileExists(atPath: url.path) { try PrivateStorage.protectFile(url); token = String(decoding: try ChatterPaths.readRegularFile(at: url, upTo: 256), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
         if token.count < 32 { try rotateToken() }
     }
     func rotateToken() throws {
@@ -114,8 +136,7 @@ final class AppModel {
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw ChatterError.unavailable("Cannot create a secure API token.") }
         token = Data(bytes).base64EncodedString()
         let url = ChatterPaths.root.appending(path: "api-token")
-        try token.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try PrivateStorage.write(Data(token.utf8), to: url)
     }
     func authorized(_ request: HTTPRequest) -> Bool {
         let expected = Array(("Bearer " + token).utf8), actual = Array((request.headers["authorization"] ?? "").utf8)
@@ -157,7 +178,15 @@ final class AppModel {
         let id = UUID().uuidString
         let destination = ChatterPaths.voices.appending(path: voiceID).appending(path: id)
         do {
-            let result = try await engine.command(["op":"prepare", "source":source.path, "destination":destination.path, "transcript":transcript]) { [weak self] event in
+            let staging = ChatterPaths.jobs.appending(path: "import-" + id)
+            try PrivateStorage.directory(staging)
+            defer { try? FileManager.default.removeItem(at: staging) }
+            let staged = staging.appending(path: "source." + source.pathExtension)
+            let sourceInfo = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard sourceInfo.isRegularFile == true, (sourceInfo.fileSize ?? Int.max) <= 512_000_000 else { throw ChatterError.invalid("Import a regular audio file smaller than 512 MB.") }
+            try FileManager.default.copyItem(at: source, to: staged)
+            try PrivateStorage.protectFile(staged)
+            let result = try await engine.command(["op":"prepare", "source":staged.path, "destination":destination.path, "transcript":transcript]) { [weak self] event in
                 if let message = event["message"] as? String { self?.preparationMessage = message }
             }
             guard let index = voices.firstIndex(where: { $0.id == voiceID }), let metrics = result["metrics"], let text = result["transcript"] as? String else { throw ChatterError.unavailable("Voice preparation returned incomplete data.") }

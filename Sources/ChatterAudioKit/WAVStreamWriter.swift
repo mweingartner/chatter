@@ -15,25 +15,24 @@ public final class WAVStreamWriter: Sendable {
     public let url: URL
     /// The in-progress file (`url` + `.partial`).
     public let partialURL: URL
+    private let maximumFrames: Int
     private let sampleRate: UInt32
     private let state: OSAllocatedUnfairLock<State>
 
     /// Creates `<url>.partial` (replacing a stale one) with a provisional header.
-    public init(url: URL, sampleRate: Double = 44100) throws {
+    public init(url: URL, sampleRate: Double = 44100, maximumSeconds: Double = 7200) throws {
         let rate = try PCM24.headerRate(sampleRate)
+        guard maximumSeconds.isFinite, maximumSeconds > 0, maximumSeconds <= 14400 else { throw ChatterAudioError.unsupportedDuration }
+        maximumFrames = Int(maximumSeconds * sampleRate)
         let partialURL = URL(filePath: url.path(percentEncoded: false) + ".partial")
         let header = Data(PCM24.header(sampleRate: rate, dataBytes: 0))
-        guard FileManager.default.createFile(atPath: partialURL.path(percentEncoded: false), contents: header) else {
-            throw ChatterAudioError.writeFailed(reason: "Cannot create \(partialURL.lastPathComponent).")
-        }
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forWritingTo: partialURL)
-            try handle.seekToEnd()
-        } catch {
-            AtomicFile.discard(partialURL)
-            throw ChatterAudioError.writeFailed(reason: error.localizedDescription)
-        }
+        // Remove only the stale name; exclusive, no-follow creation prevents link substitution.
+        do { try FileManager.default.removeItem(at: partialURL) } catch CocoaError.fileNoSuchFile { }
+        let fd = open(partialURL.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw ChatterAudioError.writeFailed(reason: "Cannot create \(partialURL.lastPathComponent).") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do { try handle.write(contentsOf: header) }
+        catch { try? handle.close(); AtomicFile.discard(partialURL); throw error }
         self.url = url
         self.partialURL = partialURL
         self.sampleRate = rate
@@ -54,6 +53,7 @@ public final class WAVStreamWriter: Sendable {
             guard case .open(let handle) = state.phase else {
                 throw ChatterAudioError.writeFailed(reason: "The audio file is already closed.")
             }
+            guard state.frames + samples.count <= maximumFrames else { throw ChatterAudioError.unsupportedDuration }
             _ = try PCM24.dataSize(frames: state.frames + samples.count)
             var bytes: [UInt8] = []
             try PCM24.encode(samples, into: &bytes)

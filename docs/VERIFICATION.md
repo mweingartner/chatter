@@ -1,4 +1,17 @@
-# Chatter 3.0.2 public release verification — 2026-09-30
+# Chatter 3.1.0 security verification — 2026-10-01
+
+Validated locally on Apple Silicon with macOS 27 and Xcode 27 beta. These are development-build checks; no notarized 3.1.0 release is claimed.
+
+- **504-test suite passed:** 340 core, 38 engine, 50 audio and 76 tooling tests. One optional transcription test requiring a private recording was skipped. Fixtures remain synthetic.
+- **Service boundaries:** 26 packaged-app checks cover authenticated HTTPS, certificate pinning, rejection of the administrator token on LAN, missing/expired/revoked credentials, browser origins, scope restrictions, client-isolated receipts/retries/cancellation, per-client queue capacity, authentication before body buffering, and service availability under 128 incomplete connections.
+- **Actual engine isolation:** subprocess tests prove that model reads and staged writes work while credential/personal-file reads, writes outside permitted directories, and network connections fail. These checks caught and corrected a kernel-path mismatch in the first policy implementation. This is a process policy, not full App Sandbox qualification.
+- **Real audio:** Ryan narration and Ryan/Aiden dialogue completed under the restricted helper. Generated WAVs were owner-only, native 24 kHz mono PCM24; streamed downloads matched local files byte for byte, and dialogue turn timing was retained. These are format/runtime checks, not subjective voice-quality acceptance.
+- **Storage and compatibility:** migration preserves receipt IDs and per-owner retries; regressions cover pending payload limits, exclusive process locking, retained exports, duration limits, atomic private WAV creation, and changed-model integrity verification. The live preferences review exercised migration of the existing local library without including its contents in the repository.
+- **Supply chain and distribution:** all vendored file hashes and 29 OSV queries passed locally with no reported affected pins. The audit produces a component inventory, not a guarantee of exhaustive advisory coverage. Production packaging rejects missing signing/notarization credentials before building. GitHub private vulnerability reporting is enabled.
+
+Local evidence is retained under the ignored `artifacts/security-hardening/` directory and associated build/test logs. Public binaries from 3.0.2 predate this hardening. Developer ID distribution credentials remain unavailable on this machine; no new public binary is claimed.
+
+## Chatter 3.0.2 public release verification — 2026-09-30
 
 Validated on an Apple Silicon M5 Max, macOS 27, Xcode 27 beta. Deployment target is macOS 26; a separate macOS 26/minimum-memory machine was not available for qualification.
 

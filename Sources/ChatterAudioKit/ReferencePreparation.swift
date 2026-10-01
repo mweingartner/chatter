@@ -38,7 +38,7 @@ public enum ReferencePreparation {
     public static func prepare(source: URL, destination: URL, transcript: String,
                                transcribe: (@Sendable ([Float]) async throws -> String)?,
                                progress: (@Sendable (String) -> Void)?) async throws -> PreparedReference {
-        let audio = try AudioIO.readMono44k(source)
+        let audio = try AudioIO.readMono(source, sampleRate: 44100, maximumSeconds: acceptedDuration.upperBound)
         let metrics = RecordingHealth.inspect(audio)
         guard acceptedDuration.contains(metrics.duration) else { throw ChatterAudioError.unsupportedDuration }
         guard metrics.rms >= 0.001 else { throw ChatterAudioError.noSpeechLevel }

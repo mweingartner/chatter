@@ -36,8 +36,8 @@ let package = Package(
     ],
     targets: [
         .target(name: "ChatterCore"),
-        .target(name: "ChatterAudioKit"),
-        .target(name: "ChatterToolingKit"),
+        .target(name: "ChatterAudioKit", dependencies: ["ChatterCore"]),
+        .target(name: "ChatterToolingKit", dependencies: ["ChatterCore"]),
         .target(name: "Qwen3CodecSupport", dependencies: mlx + [.product(name: "MLXLMCommon", package: "mlx-swift-lm")]),
         .target(name: "Qwen3Speech", dependencies: mlx + ["Qwen3CodecSupport", .product(name: "MLXLMCommon", package: "mlx-swift-lm"), .product(name: "Tokenizers", package: "swift-transformers")]),
         .target(name: "ChatterEngine", dependencies: ["Qwen3Speech", "ChatterAudioKit", "ChatterCore"]),

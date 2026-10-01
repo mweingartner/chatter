@@ -25,6 +25,7 @@ public struct SpeechJob: Codable, Identifiable, Sendable {
     public var expressionMessage: String?
     public var sequence: UInt64 = 0
     public var requestID: String?
+    public var clientID: String?
     public var attempts = 0
     public var state: String
     public var createdAt: Date

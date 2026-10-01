@@ -23,7 +23,7 @@ public struct ChatterMCPForwarder: MCPForwarding {
     ) {
         self.environment = environment
         self.home = home
-        http = ChatterHTTPSession(timeout: Self.timeout)
+        http = ChatterHTTPSession(timeout: Self.timeout, tlsFingerprint: environment["CHATTER_TLS_SHA256"])
     }
 
     public func forward(_ message: JSONValue) async throws -> JSONValue? {

@@ -2,7 +2,7 @@ import Foundation
 import ChatterCore
 
 extension AppModel {
-    static var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.0.2" }
+    static var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.1.0" }
     func json(_ value: Any, status: Int = 200) -> HTTPResponse {
         do { return HTTPResponse(status: status, body: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed])) }
         catch { return HTTPResponse(status: 500, body: Data("{\"error\":\"JSON encoding failed\"}".utf8)) }
@@ -12,8 +12,8 @@ extension AppModel {
         encoder.dateEncodingStrategy = .iso8601
         return (try? JSONSerialization.jsonObject(with: encoder.encode(value))) ?? [:]
     }
-    func voiceList() -> [[String: Any]] {
-        voices.map { voice in
+    func voiceList(access: ClientAccess = ClientAccess()) -> [[String: Any]] {
+        voices.filter { access.allowsVoice($0.id) }.map { voice in
             let active = Set(voice.referenceSamples.map(\.id))
             return ["id":voice.id, "name":voice.name, "ready":voice.isReady, "kind":voice.kind.rawValue, "language":voice.synthesisConfiguration.language,
                     "supportsInstructions":voice.kind.supportsInstructions, "configuration":object(voice.synthesisConfiguration),
@@ -90,33 +90,38 @@ extension AppModel {
     func route(_ request: HTTPRequest) async -> HTTPResponse {
         // Reject browser-origin requests. Native/CLI clients don't send Origin.
         if request.headers["origin"] != nil { return json(["error":"Browser origins are not enabled. Use an MCP client or native API client."], status: 403) }
-        guard authorized(request) else { var response = json(["error":"Bearer token required"], status: 401); response.headers["WWW-Authenticate"] = "Bearer"; return response }
+        guard let access = access(for: request) else { var response = json(["error":"Bearer token required"], status: 401); response.headers["WWW-Authenticate"] = "Bearer"; return response }
+        guard requestRate.allow(access.ownerID ?? "local", limit: 600) else { return HTTPResponse(status: 429, headers: ["Retry-After":"60"]) }
         let path = request.path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? request.path
         if path == "/mcp" {
             if let version = request.headers["mcp-protocol-version"], !["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"].contains(version) { return json(["error":"Unsupported MCP protocol version"], status:400) }
             guard request.method == "POST" else { return HTTPResponse(status: 405, headers: ["Allow":"POST"]) }
-            return handleMCP(request.body)
+            return handleMCP(request.body, access: access)
         }
         do {
+            let required: ClientScope = request.method == "DELETE" ? .cancel : request.method == "POST" ? .speak : .read
+            guard access.allows(required) else { return json(["error":"Client permission denied."], status:403) }
             if ["/v1/health", "/v1/status"].contains(path), request.method == "GET" { return json(statusObject()) }
             if path == "/v1/capabilities", request.method == "GET" { return json(capabilitiesObject()) }
             if path == "/v1/tones", request.method == "GET" { return json(["tones":toneList()]) }
-            if path == "/v1/voices", request.method == "GET" { return json(["voices":voiceList()]) }
+            if path == "/v1/voices", request.method == "GET" { return json(["voices":voiceList(access: access)]) }
             if path == "/v1/dialogue", request.method == "POST" {
                 guard let input=try JSONSerialization.jsonObject(with:request.body) as? [String:Any] else { throw ChatterError.invalid("Expected a JSON object") }
-                return json(jobObject(try submit(dialogueFromJSON(input),requestID:(input["requestID"] as? String) ?? request.headers["idempotency-key"])),status:202)
+                return json(jobObject(try submit(dialogueFromJSON(input),requestID:(input["requestID"] as? String) ?? request.headers["idempotency-key"], access: access)),status:202)
             }
             if path == "/v1/speech", request.method == "POST" {
                 guard let input = try JSONSerialization.jsonObject(with: request.body) as? [String:Any] else { throw ChatterError.invalid("Expected a JSON object") }
-                return json(jobObject(try submit(requestFromJSON(input), requestID: (input["requestID"] as? String) ?? request.headers["idempotency-key"])), status: 202)
+                return json(jobObject(try submit(requestFromJSON(input), requestID: (input["requestID"] as? String) ?? request.headers["idempotency-key"], access: access)), status: 202)
             }
-            if path == "/v1/jobs", request.method == "GET" { return json(["jobs":jobs.prefix(100).map(jobObject)]) }
+            if path == "/v1/jobs", request.method == "GET" { return json(["jobs":jobs.filter { access.canRead($0) }.prefix(100).map(jobObject)]) }
             let pieces = path.split(separator: "/")
-            if pieces.count >= 3, pieces[0] == "v1", pieces[1] == "jobs", let job = (jobs + archivedJobs).first(where: { $0.id == String(pieces[2]) }) {
+            if pieces.count >= 3, pieces[0] == "v1", pieces[1] == "jobs", let job = try job(id: String(pieces[2]), access: access) {
                 if pieces.count == 3, request.method == "GET" { return json(jobObject(job)) }
                 if pieces.count == 3, request.method == "DELETE" { cancelJob(job.id); return json(["id":job.id,"state":jobs.first(where: {$0.id == job.id})?.state ?? job.state]) }
                 if pieces.count == 4, pieces[3] == "audio", request.method == "GET", job.state == "completed", let path = job.path {
-                    return HTTPResponse(body: try Data(contentsOf: URL(filePath: path), options: .mappedIfSafe), contentType: "audio/wav", headers: ["Content-Disposition":"attachment; filename=\"Chatter-\(job.id).wav\""])
+                    var response = HTTPResponse(contentType: "audio/wav", headers: ["Content-Disposition":"attachment; filename=\"Chatter-\(job.id).wav\""])
+                    response.fileURL = URL(filePath: path)
+                    return response
                 }
             }
             return json(["error":"Route or completed audio not found"], status: 404)
@@ -126,7 +131,7 @@ extension AppModel {
             if code == 429 { response.headers["Retry-After"] = "5" }; return response
         } catch { return json(["error":error.localizedDescription], status: 400) }
     }
-    func handleMCP(_ data: Data) -> HTTPResponse {
+    func handleMCP(_ data: Data, access: ClientAccess = ClientAccess()) -> HTTPResponse {
         guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return json(["jsonrpc":"2.0","id":NSNull(),"error":["code":-32700,"message":"Parse error"]]) }
         let id: Any = value["id"] ?? NSNull()
         func result(_ result: Any) -> HTTPResponse { json(["jsonrpc":"2.0","id":id,"result":result]) }
@@ -146,18 +151,20 @@ extension AppModel {
             guard let name = params["name"] as? String else { return failure(-32602,"Tool name required") }
             let args = params["arguments"] as? [String: Any] ?? [:]
             do {
+                let required: ClientScope = ["chatter_speak","chatter_dialogue"].contains(name) ? .speak : name == "chatter_cancel" ? .cancel : .read
+                guard access.allows(required) else { throw ChatterError.invalid("Client permission denied.") }
                 let output: Any
                 switch name {
                 case "chatter_status": output = statusObject()
                 case "chatter_capabilities": output = capabilitiesObject()
                 case "chatter_tones": output = ["tones":toneList()]
-                case "chatter_voices": output = ["voices":voiceList()]
-                case "chatter_dialogue": output = jobObject(try submit(dialogueFromJSON(args), requestID:args["requestID"] as? String))
-                case "chatter_speak": output = jobObject(try submit(requestFromJSON(args), requestID: args["requestID"] as? String))
+                case "chatter_voices": output = ["voices":voiceList(access: access)]
+                case "chatter_dialogue": output = jobObject(try submit(dialogueFromJSON(args), requestID:args["requestID"] as? String, access: access))
+                case "chatter_speak": output = jobObject(try submit(requestFromJSON(args), requestID: args["requestID"] as? String, access: access))
                 case "chatter_job":
-                    guard let id = args["id"] as? String, let job = (jobs + archivedJobs).first(where: { $0.id == id }) else { throw ChatterError.invalid("Unknown job ID") }; output = jobObject(job)
+                    guard let id = args["id"] as? String, let job = try job(id: id, access: access) else { throw ChatterError.invalid("Unknown job ID") }; output = jobObject(job)
                 case "chatter_cancel":
-                    guard let id = args["id"] as? String, let job = (jobs + archivedJobs).first(where: { $0.id == id }) else { throw ChatterError.invalid("Unknown job ID") }
+                    guard let id = args["id"] as? String, let job = try job(id: id, access: access) else { throw ChatterError.invalid("Unknown job ID") }
                     cancelJob(id); output = ["id":id,"state":jobs.first(where: { $0.id == id })?.state ?? job.state]
                 default: return failure(-32602,"Unknown tool")
                 }
@@ -170,7 +177,7 @@ extension AppModel {
     static var mcpTools: [[String: Any]] {
         func tool(_ name: String, _ description: String, _ properties: [String: Any] = [:], _ required: [String] = [], readOnly: Bool = true) -> [String: Any] {
             ["name":name,"description":description,"inputSchema":["type":"object","properties":properties,"required":required,"additionalProperties":false],
-             "annotations":["readOnlyHint":readOnly,"destructiveHint":false,"idempotentHint":readOnly,"openWorldHint":false]]
+             "annotations":["readOnlyHint":readOnly,"destructiveHint":name == "chatter_cancel","idempotentHint":readOnly,"openWorldHint":false]]
         }
         return [tool("chatter_status","Check model readiness and queue size."), tool("chatter_voices","List locally saved voice IDs and recordings."),
                 tool("chatter_capabilities","List Qwen voice kinds, languages, speakers, models and instruction support."),
