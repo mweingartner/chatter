@@ -78,10 +78,12 @@ import Testing
     @Test func pendingPayloadBudgetRejectsNewWorkButAllowsCompletion() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         var first = SpeechJob(request: SpeechRequest(voice: "Ryan", text: String(repeating: "a", count: 500)), voiceName: "Ryan")
-        let encodedSize = try JSONEncoder().encode(first).count
-        let db = try JobDatabase(root: root, maximumPendingBytes: Int64(encodedSize * 2 - 1))
-        try db.save(first)
         let next = SpeechJob(request: first.request, voiceName: "Ryan")
+        // Date encoding can differ by a byte across receipts. Permit either alone,
+        // but leave substantially less room than their combined encoded size.
+        let budget = max(try JSONEncoder().encode(first).count, try JSONEncoder().encode(next).count) + 1
+        let db = try JobDatabase(root: root, maximumPendingBytes: Int64(budget))
+        try db.save(first)
         #expect(throws: (any Error).self) { try db.save(next) }
         first.state = "completed"; try db.save(first)
         try db.save(next)

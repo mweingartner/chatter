@@ -156,7 +156,10 @@ struct ReferencePreparationTests {
         let silence = TestSignals.zeros(2)
         #expect(ReferencePreparation.speechBounds(silence, rms: 0) == silence.indices)
         #expect(ReferencePreparation.normalizedPeak(silence) == silence)
-        #expect(ReferencePreparation.normalizedPeak([0.001, -0.002]) == [0.001 * 4, -0.002 * 4])
-        #expect(ReferencePreparation.normalizedPeak([0.5, -1.78]) == [0.5 * Float(0.89 / Double(Float(1.78))), -1.78 * Float(0.89 / Double(Float(1.78)))])
+        let quietExpected: [Float] = [0.001 * 4, -0.002 * 4]
+        #expect(ReferencePreparation.normalizedPeak([0.001, -0.002]) == quietExpected)
+        let loudGain = Float(0.89 / Double(Float(1.78)))
+        let loudExpected: [Float] = [0.5 * loudGain, -1.78 * loudGain]
+        #expect(ReferencePreparation.normalizedPeak([0.5, -1.78]) == loudExpected)
     }
 }
