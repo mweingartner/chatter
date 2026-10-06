@@ -1,3 +1,7 @@
+# Chatter 3.1.1 — clean recorded-voice edges
+
+- Recorded (cloned) voices no longer start every sentence with a sound like a microphone switching on. Qwen continues the reference recording's room tone for a few frames before the first word and after the last; that room tone now becomes silence, with a short fade into the first word and out of the last. Quiet opening consonants such as "f", "s", "th" and "h" are kept. Durations and timing are unchanged; voices that already begin and end in silence, such as the built-in speakers, sound the same.
+
 # Chatter 3.1.0 — security hardening
 
 - Local HTTP remains on loopback for existing Mac integrations. LAN access is now opt-in HTTPS on a separate port with a verifiable certificate fingerprint. Existing plaintext LAN settings are disabled during migration.

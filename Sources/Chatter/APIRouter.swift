@@ -2,7 +2,7 @@ import Foundation
 import ChatterCore
 
 extension AppModel {
-    static var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.1.0" }
+    static var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.1.1" }
     func json(_ value: Any, status: Int = 200) -> HTTPResponse {
         do { return HTTPResponse(status: status, body: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed])) }
         catch { return HTTPResponse(status: 500, body: Data("{\"error\":\"JSON encoding failed\"}".utf8)) }
