@@ -255,7 +255,9 @@ struct EngineCoreTests {
         do { _ = try body(); return "" } catch { return error.localizedDescription }
     }
 
-    @Test(arguments: [("stream", 1.0, "Mode must be play or save."), ("PLAY", 1.0, "Mode must be play or save."),
+    @Test(arguments: [("stream", 1.0, SpeechMode.validationMessage), ("PLAY", 1.0, SpeechMode.validationMessage),
+                      ("Render", 1.0, SpeechMode.validationMessage), ("", 1.0, SpeechMode.validationMessage),
+                      ("render", 0.49, "Pace must be between 0.5 and 2.0."),
                       ("play", 0.49, "Pace must be between 0.5 and 2.0."), ("save", 2.01, "Pace must be between 0.5 and 2.0."),
                       ("play", 0, "Pace must be between 0.5 and 2.0."), ("play", -1, "Pace must be between 0.5 and 2.0.")])
     func invalidRequestsAreRejectedBeforeAnyWork(mode: String, pace: Double, message: String) throws {

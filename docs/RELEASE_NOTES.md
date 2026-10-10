@@ -1,3 +1,9 @@
+# Chatter 3.2.0 — render mode for voice clients
+
+- New `render` mode generates speech silently at the requested quality (Responsive, Balanced or Studio) for a client to download. Nothing plays on the Mac, nothing is exported to the output folder, and the audio is deleted about 10 minutes after it is generated, archived or not. Voice assistants no longer have to use `save`, which always renders at Studio quality.
+- `?wait=true` on `POST /v1/speech` and `GET /v1/jobs/{id}` returns the finished receipt in the same request (up to 30 seconds), instead of polling.
+- Cancelling a render or save job no longer stops audio playing on the Mac, and starting one no longer interrupts a recording preview or replay. Only `play` jobs control playback.
+
 # Chatter 3.1.1 — clean recorded-voice edges
 
 - Recorded (cloned) voices no longer start every sentence with a sound like a microphone switching on. Qwen continues the reference recording's room tone for a few frames before the first word and after the last; that room tone now becomes silence, with a short fade into the first word and out of the last. Quiet opening consonants such as "f", "s", "th" and "h" are kept. Durations and timing are unchanged; voices that already begin and end in silence, such as the built-in speakers, sound the same.

@@ -4,7 +4,7 @@
 
 Chatter is a native Swift macOS menu-bar application. Its UI, HTTP/MCP server, persistence, and durable FIFO queue remain independent of MLX. A separately supervised `chatter-engine` owns the serialized GPU inference lane, Qwen models, codec, speaker encoder, and bounded conditioning caches. A versioned JSON command/event protocol connects app and helper. GPU/helper failures become job failures and restart recovery rather than terminating the HTTP service.
 
-Accepted requests freeze voice configuration and are persisted before acknowledgment. Speech and an entire multi-actor dialogue each occupy one queue position. Stable request IDs support safe retries; cancellation and explicit capacity errors prevent silent drops. Receipts retain requested controls, warnings, actual model/profile, and audio timing.
+Accepted requests freeze voice configuration and are persisted before acknowledgment. Speech and an entire multi-actor dialogue each occupy one queue position. Stable request IDs support safe retries; cancellation and explicit capacity errors prevent silent drops. Receipts retain requested controls, warnings, actual model/profile, and audio timing. Requests either play on the Mac, save a Studio WAV to the output folder, or render silently at the requested quality for a client to download within 10 minutes; only play jobs start, stop or wait for the Mac's playback, so cancelling a render or save never silences it. `?wait=` holds a submission or job lookup open (at most 30 s, 8 per credential) until the job finishes; the listener's 10 s idle limit does not apply while Chatter is preparing a reply.
 
 ## Voices and quality
 

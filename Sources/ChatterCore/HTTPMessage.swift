@@ -10,6 +10,19 @@ public struct HTTPRequest: Sendable {
     public init(method: String, path: String, headers: [String: String] = [:], body: Data = Data()) {
         self.method = method; self.path = path; self.headers = headers; self.body = body
     }
+    /// Query parameters, percent-decoded. The first occurrence of a name wins; a value whose escapes
+    /// do not decode is kept as written, so validation rejects it rather than reading it as empty.
+    public var query: [String: String] {
+        guard let mark = path.firstIndex(of: "?") else { return [:] }
+        var result: [String: String] = [:]
+        for pair in path[path.index(after: mark)...].split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let name = parts[0].removingPercentEncoding, !name.isEmpty, result[name] == nil else { continue }
+            let raw = parts.count > 1 ? String(parts[1]) : ""
+            result[name] = raw.removingPercentEncoding ?? raw
+        }
+        return result
+    }
     public static func parse(_ data: Data, maxBody: Int = 2_000_000, headersOnly: Bool = false) throws -> (HTTPRequest, Int)? {
         guard let boundary = data.range(of: Data("\r\n\r\n".utf8)) else {
             if data.count > 16_384 { throw ChatterError.invalid("Headers too large") }; return nil

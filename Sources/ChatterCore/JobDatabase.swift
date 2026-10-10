@@ -72,6 +72,14 @@ public final class JobDatabase {
         guard sqlite3_step(stmt) == SQLITE_ROW else { throw failure() }
         return UInt64(max(0, sqlite3_column_int64(stmt, 0)))
     }
+    /// Finished render receipts that still name their audio, archived or not, oldest first:
+    /// what the render sweep checks, so archiving cannot keep render audio past its window.
+    /// The text match is a prefilter (receipts are compact JSON); the decoded mode decides.
+    public func renderedAudio(limit: Int = 200) throws -> [SpeechJob] {
+        try query("SELECT body FROM jobs WHERE terminal=1 AND CAST(body AS TEXT) LIKE '%\"mode\":\"render\"%' AND CAST(body AS TEXT) LIKE '%\"path\":%' ORDER BY sequence ASC LIMIT ?",
+                  number: max(1, limit), maximumBytes: 16_000_000)
+            .filter { $0.request.mode == SpeechMode.render.rawValue && $0.path != nil }
+    }
     public func archiveFinished() throws { try execute("UPDATE jobs SET hidden=1 WHERE terminal=1") }
     /// Returns one bounded cleanup page. Active jobs are never eligible.
     public func expired(days: Int, keep: Int, now: Date = .now) throws -> [SpeechJob] {

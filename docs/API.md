@@ -22,9 +22,17 @@ Defaults: maximum audio 30 minutes/job, maximum generation 60 minutes/job, stora
 {"voice":"Ryan","text":"Hello. This runs locally.","mode":"save","pace":1.0,"language":"English","tone":"natural","requestID":"intro-v1"}
 ```
 
-Required `voice` is a unique saved ID/name; `text` is up to 100,000 UTF-8 bytes. `mode` is `play` (default) or `save`. Pace is 0.5–2.0. Optional `quality` is responsive/balanced/studio; save always uses studio. Optional `sampleID` selects one recording instead of the enabled set. `language` overrides the profile. `instruction` is a natural-language direction up to 2,000 UTF-8 bytes, supported only by built-in or designed voices. Non-natural `tone` on a recorded voice returns a warning; explicit unsupported instructions fail with 400. Inspect capabilities instead of assuming all voices support every control.
+Required `voice` is a unique saved ID/name; `text` is up to 100,000 UTF-8 bytes. `mode` is `play` (default), `save` or `render`. Pace is 0.5–2.0. Optional `quality` is responsive/balanced/studio; play and render use it (or the live quality when omitted), and save always uses studio. Optional `sampleID` selects one recording instead of the enabled set. `language` overrides the profile. `instruction` is a natural-language direction up to 2,000 UTF-8 bytes, supported only by built-in or designed voices. Non-natural `tone` on a recorded voice returns a warning; explicit unsupported instructions fail with 400. Inspect capabilities instead of assuming all voices support every control.
 
 Qwen receives plain text plus separate tone/instruction fields directly. Chatter does not annotate speech with Ollama or load an auxiliary language model before generation. Old expression switches and `expressive` fields no longer enable a review. Previously accepted plans remain readable for restart compatibility. Leading parenthesized/bracketed delivery notes are separated from spoken text. Recorded clones do not receive delivery instructions. Dialogue uses explicit per-turn controls and does not run automatic expression review. Pronunciation mappings continue to apply at synthesis time.
+
+### Render mode
+
+`"mode":"render"` generates audio for a client to download, at the requested quality, without playing anything on the Mac or exporting a WAV to the output folder. The audio is available from `audioURL` for 10 minutes after it is generated (`renderRetentionSeconds` in capabilities) and deleted within about a minute after that, including for archived jobs; the receipt stays and no longer offers `audioURL`. Retrying with the same `requestID` after that returns the receipt without audio, so ask again with a new `requestID`. Render is for single-voice speech; dialogue accepts play or save. A render's audio matches `play` at the same quality, and the job never starts, stops or waits for the Mac's playback.
+
+### Waiting for the result
+
+Add `?wait=true` to `POST /v1/speech` or `GET /v1/jobs/{id}` to hold the reply until the job is completed, failed or cancelled, for at most 30 seconds (`maximumWaitSeconds`); `?wait=N` waits at most N seconds. A submission that finished in time returns 200 with the final receipt; otherwise it returns 202 with the receipt as it stands, and the client continues with `GET /v1/jobs/{id}?wait=true`. A credential may hold 8 waiting requests at once; further requests answer immediately.
 
 ## Quality levels
 
@@ -58,7 +66,7 @@ The entire dialogue is one durable FIFO job; other clients cannot interleave its
 
 ## Jobs and reliability
 
-Both POST routes return HTTP 202 with a persistent receipt. Poll `GET /v1/jobs/{id}` until completed, failed or cancelled; `GET /v1/jobs` lists recent jobs. Completed receipts include `path`, `duration`, model/profile, sample format, warnings and `audioURL`. `GET /v1/jobs/{id}/audio` retrieves the WAV with the same authentication. `DELETE /v1/jobs/{id}` cancels it. Local paths refer to the Chatter host.
+Both POST routes return HTTP 202 with a persistent receipt. Poll `GET /v1/jobs/{id}` until completed, failed or cancelled; `GET /v1/jobs` lists recent jobs. Completed receipts include `path`, `duration`, model/profile, sample format, warnings and `audioURL`. `GET /v1/jobs/{id}/audio` retrieves the WAV with the same authentication. `DELETE /v1/jobs/{id}` cancels it: a running job stops at its next generated frame, so the queue moves on promptly. Only cancelling a `play` job stops the Mac's playback; cancelling a render or save leaves anything playing alone. Local paths refer to the Chatter host.
 
 One job generates/plays at a time. Default pending capacity is 1,000, configurable up to 10,000. Full queues return 429 with `Retry-After: 5`; network connection limits return 503. Reuse `requestID` or the `Idempotency-Key` header only for identical retries. Accepted jobs are durably saved before acknowledgment; no pending jobs are silently evicted. Restart recovery preserves order.
 

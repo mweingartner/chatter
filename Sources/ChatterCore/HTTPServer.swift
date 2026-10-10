@@ -19,6 +19,9 @@ public final class HTTPServer {
         let accepted: ContinuousClock.Instant
         var authenticated = false
         var activity = ContinuousClock.now
+        /// A complete request is being answered (a `?wait=` reply can take up to 30 s); the idle
+        /// limit applies to clients that stop sending, not to Chatter's own work.
+        var answering = false
     }
     public init() {}
 
@@ -65,7 +68,7 @@ public final class HTTPServer {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, let entry = self.connections[id] else { return }
                 let age = ContinuousClock.now - entry.accepted
-                if (!entry.authenticated && age > .seconds(3)) || age > .seconds(120) || ContinuousClock.now - entry.activity > .seconds(10) {
+                if (!entry.authenticated && age > .seconds(3)) || age > .seconds(120) || (!entry.answering && ContinuousClock.now - entry.activity > .seconds(10)) {
                     self.close(id); return
                 }
             }
@@ -90,7 +93,11 @@ public final class HTTPServer {
                     }
                     if var request = try HTTPRequest.parse(next)?.0 {
                         request.isLocal = self.local
+                        self.connections[id]?.answering = true
                         let response = await self.route?(request) ?? HTTPResponse(status: 503)
+                        // The answer is ready: from here a client that stops reading is idle again.
+                        self.connections[id]?.answering = false
+                        self.connections[id]?.activity = .now
                         self.send(response, to: connection, id: id)
                     } else if complete || error != nil { self.close(id) }
                     else { self.receive(connection, id: id, buffer: next) }

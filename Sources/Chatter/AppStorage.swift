@@ -28,6 +28,17 @@ extension AppModel {
     func trimHistory() {
         do {
             guard let history else { return }
+            // Render audio is ephemeral: once its window passes, the receipt stops offering it,
+            // archived or not. A render that cannot be removed now must not hold up retention.
+            do {
+                let renders = try history.renderedAudio()
+                for id in try AudioStorage.removeExpiredRenders(renders, jobs: ChatterPaths.jobs) {
+                    guard var receipt = renders.first(where: { $0.id == id }) else { continue }
+                    receipt.path = nil
+                    try history.save(receipt)  // Updates the body only; an archived receipt stays archived.
+                    if let i = jobs.firstIndex(where: { $0.id == id }) { jobs[i].path = nil }
+                }
+            } catch { self.error = "Render cleanup: " + error.localizedDescription }
             for job in try history.expired(days: settings.retentionDays, keep: settings.retainedJobLimit) {
                 try AudioStorage.removeAudio(for: job, output: URL(filePath: settings.outputDirectory), jobs: ChatterPaths.jobs, deleteExports: settings.deleteExpiredAudio)
                 try history.remove(id: job.id)

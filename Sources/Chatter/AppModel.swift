@@ -17,6 +17,8 @@ final class AppModel {
     var tlsFingerprint = ""
     @ObservationIgnored var requestRate = ClientRateLimiter()
     @ObservationIgnored var submissionRate = ClientRateLimiter()
+    /// Requests currently held open by `?wait=`, per credential (`JobWait.perCredential`).
+    @ObservationIgnored var openWaits: [String: Int] = [:]
     @ObservationIgnored var maintenanceTask: Task<Void, Never>?
     /// Optional local models for on-demand pronunciation suggestions.
     var ollamaModels: [OllamaModel] = []

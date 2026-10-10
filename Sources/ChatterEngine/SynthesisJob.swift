@@ -13,7 +13,9 @@ struct SynthesisJob {
     func run() throws -> [String:Any] {
         if let turns=command.dialogueTurns { return try DialogueSynthesis(engine:engine,command:command,turns:turns).run() }
         let c=command
-        guard ["play","save"].contains(c.mode) else { throw EngineFailure.invalid("Mode must be play or save.") }
+        guard let mode = SpeechMode(rawValue: c.mode) else { throw EngineFailure.invalid(SpeechMode.validationMessage) }
+        // Play and render are live audio (short passages, streamed chunks); only save is an export.
+        let live = !mode.exportsWAV
         guard c.pace.isFinite, (0.5...2).contains(c.pace) else { throw EngineFailure.invalid("Pace must be between 0.5 and 2.0.") }
         guard ["responsive","balanced","studio"].contains(c.quality ?? "balanced") else { throw EngineFailure.invalid("Quality must be responsive, balanced or studio.") }
         let voice=try (c.voiceConfiguration ?? QwenVoiceConfiguration()).validated()
@@ -28,7 +30,7 @@ struct SynthesisJob {
         let model=try engine.model(profile)
         let conditioning=voice.kind == .cloned ? try engine.conditioning(c.references,profile:profile,language:language) : nil
         let instruction=[c.toneCue,c.instruction].compactMap { $0 }.joined(separator:" ")
-        let passages=try DeliveryPassages.passages(QwenPromptSafety.spokenText(c.text),maxBytes:c.mode == "play" ? 220 : 380,instruction:instruction,supportsInstructions:voice.kind.supportsInstructions)
+        let passages=try DeliveryPassages.passages(QwenPromptSafety.spokenText(c.text),maxBytes:live ? 220 : 380,instruction:instruction,supportsInstructions:voice.kind.supportsInstructions)
         guard !passages.isEmpty else { throw EngineFailure.invalid("Enter text to speak.") }
         let seed=c.seed ?? UInt64.random(in:0...UInt64(UInt32.max)); MLXRandom.seed(seed)
         let paced=abs(c.pace-1)>0.0001
@@ -41,7 +43,7 @@ struct SynthesisJob {
             guard ContinuousClock.now < deadline else { throw EngineFailure.failed("Generation time limit reached.") }
             try checkCancelled()
             try writer.append(Self.validated(samples))
-            if c.mode == "play" {
+            if live {
                 if let onChunk { try onChunk(samples); return }
                 let part=directory.appending(path:"part-\(chunks).wav")
                 try AudioIO.writePCM24(samples,sampleRate:24000,to:part)
@@ -56,7 +58,7 @@ struct SynthesisJob {
             case .preset: [voice.speaker!,passage.instruction].filter { !$0.isEmpty }.joined(separator:", ")
             case .designed: [voice.description!,passage.instruction].filter { !$0.isEmpty }.joined(separator:" ")
             }
-            let responsive=c.mode == "play" && quality.streamsChunks
+            let responsive=live && quality.streamsChunks
             var envelope = PassageEnvelope()
             func deliverPassage(_ samples: [Float]) throws {
                 let output = envelope.append(try Self.validated(samples))

@@ -49,6 +49,23 @@ import ChatterCore
         let response = try await ChatterHTTPSession(timeout: 5).send(request)
         #expect(response.1.statusCode == 200)
     }
+    /// `?wait=` holds a reply open while a job renders; the 10 s idle limit is for clients that stop
+    /// sending, so a reply Chatter is still preparing must not be cut off by it.
+    @Test func aReplyStillBeingPreparedOutlivesTheIdleLimit() async throws {
+        let server = HTTPServer(); defer { server.stop() }
+        server.authorizeHeaders = { $0.headers["authorization"] == "Bearer fixture" ? nil : HTTPResponse(status: 401) }
+        server.route = { _ in
+            try? await Task.sleep(for: .seconds(11.5))
+            return HTTPResponse(body: Data("rendered".utf8))
+        }
+        let port = Int.random(in: 30000...45000)
+        try server.start(port: port, allowLAN: false)
+        try await Task.sleep(for: .milliseconds(100))
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/speech?wait=true")!)
+        request.setValue("Bearer fixture", forHTTPHeaderField: "Authorization")
+        let (body, response) = try await ChatterHTTPSession(timeout: 20).send(request)
+        #expect(response.statusCode == 200); #expect(body == Data("rendered".utf8))
+    }
     @Test func remotePlaintextAndInvalidPinsAreRejected() throws {
         #expect(throws: ChatterConnectionError.insecureRemoteURL) {
             try ChatterConnection.resolve(environment: ["CHATTER_URL":"http://192.0.2.1:18423", "CHATTER_TOKEN":"fixture"])

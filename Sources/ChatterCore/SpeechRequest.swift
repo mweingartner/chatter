@@ -32,7 +32,8 @@ public struct SpeechRequest: Codable, Sendable {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatterError.invalid("Enter text to speak.") }
         guard text.utf8.count <= 100_000 else { throw ChatterError.invalid("Text exceeds 100,000 UTF-8 bytes. Split it into separate requests.") }
         guard pace.isFinite, (0.5...2).contains(pace) else { throw ChatterError.invalid("Pace must be between 0.5 and 2.0.") }
-        guard ["play", "save"].contains(mode) else { throw ChatterError.invalid("Mode must be play or save.") }
+        guard let speechMode = SpeechMode(rawValue: mode) else { throw ChatterError.invalid(SpeechMode.validationMessage) }
+        guard dialogue == nil || speechMode != .render else { throw ChatterError.invalid("Dialogue supports play or save; render is for single-voice speech.") }
         guard quality == nil || ["responsive", "balanced", "studio"].contains(quality) else { throw ChatterError.invalid("Quality must be responsive, balanced, or studio.") }
         if let tone, SpeechTone(rawValue: tone) == nil { throw ChatterError.invalid("Unknown tone. Choose one of: " + SpeechTone.allCases.map(\.rawValue).joined(separator: ", ")) }
         if let dialogue { _ = try dialogue.validated() }

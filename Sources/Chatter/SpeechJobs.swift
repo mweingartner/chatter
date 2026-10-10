@@ -39,7 +39,8 @@ extension AppModel {
         }
         request.voice = voice.id
         request.tone = request.effectiveTone.rawValue
-        request.quality = request.mode == "save" ? "studio" : (request.quality ?? settings.liveQuality)
+        let mode = SpeechMode(rawValue: request.mode) ?? .play
+        request.quality = mode.honoursQuality ? (request.quality ?? settings.liveQuality) : "studio"
         var job = SpeechJob(request: request, voiceName: voice.name)
         job.references = references
         job.voiceConfiguration = configuration
@@ -70,7 +71,8 @@ extension AppModel {
         guard let i = jobs.firstIndex(where: { $0.id == id }), !jobs[i].isTerminal else { return }
         let wasActive = jobs[i].state != "queued"
         jobs[i].state = "cancelled"; jobs[i].message = "Cancelled"
-        if wasActive { engine.cancel(id); playback.stop() }
+        // Only a play job owns the Mac's playback; cancelling silent work leaves anything playing alone.
+        if wasActive { engine.cancel(id); if SpeechMode(rawValue: jobs[i].request.mode)?.playsOnMac != false { playback.stop() } }
         persistJob(id)
     }
     func cancelAll() { for id in jobs.filter({ !$0.isTerminal }).map(\.id) { cancelJob(id) } }
@@ -87,9 +89,10 @@ extension AppModel {
     }
     private func perform(_ job: SpeechJob) async {
         let id = job.id
+        let mode = SpeechMode(rawValue: job.request.mode) ?? .play
         // Playback chunks are read when they arrive; only the final WAV outlives the job.
         defer { removePlaybackChunks(id) }
-        playback.stop()
+        if mode.playsOnMac { playback.stop() }
         var output: URL?
         do {
             try checkStorageBudget()
@@ -103,9 +106,9 @@ extension AppModel {
             }
             let directory = ChatterPaths.jobs.appending(path: id)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = job.request.mode == "save" ? URL(filePath: settings.outputDirectory).appending(path: "Chatter-\(id).wav") : directory.appending(path: "speech.wav")
+            let destination = mode.exportsWAV ? URL(filePath: settings.outputDirectory).appending(path: "Chatter-\(id).wav") : directory.appending(path: "speech.wav")
             output = destination
-            if job.request.mode == "play" { playback.prepare(pace: Float(job.request.pace)) }
+            if mode.playsOnMac { playback.prepare(pace: Float(job.request.pace)) }
             change(id) { $0.state = "generating"; $0.message = "Generating speech…"; $0.attempts += 1 }
             if let receipt = jobs.first(where: { $0.id == id }) { try history!.save(receipt) }
             let start = ContinuousClock.now
@@ -122,7 +125,7 @@ extension AppModel {
             var command: [String:Any] = ["id":id, "op":"synthesize", "text":spokenText,
                 "references":payload, "voiceConfiguration":object(configuration),
                 "language":job.request.language ?? configuration.language, "instruction":job.request.instruction ?? "",
-                "toneCue":job.request.effectiveTone.cue,"mode":job.request.mode,"pace":job.request.pace,
+                "toneCue":job.request.effectiveTone.cue,"mode":mode.engineMode,"pace":job.request.pace,
                 "quality":job.request.quality ?? "responsive","directory":directory.path,"output":directory.appending(path: "speech.wav").path,
                 "maximumAudioSeconds":settings.maximumSpeechMinutes * 60, "maximumGenerationSeconds":settings.maximumGenerationMinutes * 60]
             if let turns=job.dialogueTurns {
@@ -133,6 +136,7 @@ extension AppModel {
             let result = try await engine.command(command, timeout: Double(settings.maximumGenerationMinutes * 60)) { [weak self] event in
                 guard let self, self.jobs.first(where: { $0.id == id })?.state != "cancelled" else { return }
                 if event["event"] as? String == "chunk", let path = event["path"] as? String {
+                    guard mode.playsOnMac else { return }
                     self.playback.enqueue(URL(filePath: path), pace: Float(job.request.pace))
                     self.change(id) {
                         if $0.firstAudioSeconds == nil { let elapsed = start.duration(to: .now).components; $0.firstAudioSeconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18 }
@@ -143,7 +147,7 @@ extension AppModel {
             guard jobs.first(where: { $0.id == id })?.state != "cancelled" else { return }
             let generated = directory.appending(path: "speech.wav")
             guard (result["path"] as? String) == generated.path else { throw ChatterError.unavailable("Engine returned an unexpected output path.") }
-            if job.request.mode == "save" {
+            if mode.exportsWAV {
                 // The restricted helper writes only inside Jobs. Publish through an owner-only temporary file.
                 let partial = destination.appendingPathExtension("partial")
                 do {
@@ -160,11 +164,17 @@ extension AppModel {
                 $0.engineName = QwenCapabilities.engine
                 if let timing=result["dialogueTiming"], let data=try? JSONSerialization.data(withJSONObject:timing) { $0.dialogueTiming=try? JSONDecoder().decode([DialogueTiming].self,from:data) }
             }
-            if job.request.mode == "play" { try await playback.finish() }
+            if mode.playsOnMac { try await playback.finish() }
             guard jobs.first(where: { $0.id == id })?.state != "cancelled" else { return }
-            change(id) { $0.state = "completed"; $0.message = job.request.mode == "save" ? "Saved WAV • 24 kHz / 24-bit" : "Finished speaking" }
+            change(id) {
+                $0.state = "completed"
+                $0.message = switch mode { case .save: "Saved WAV • 24 kHz / 24-bit"; case .render: "Rendered • 24 kHz / 24-bit"; case .play: "Finished speaking" }
+            }
         } catch {
-            if jobs.first(where: { $0.id == id })?.state != "cancelled" { change(id) { $0.state = "failed"; $0.message = error.localizedDescription }; playback.stop() }
+            if jobs.first(where: { $0.id == id })?.state != "cancelled" {
+                change(id) { $0.state = "failed"; $0.message = error.localizedDescription }
+                if mode.playsOnMac { playback.stop() }
+            }
             // An engine that died mid-write cannot remove its in-progress file; never leave one beside saved audio.
             if let output { try? FileManager.default.removeItem(atPath: output.path + ".partial") }
         }
