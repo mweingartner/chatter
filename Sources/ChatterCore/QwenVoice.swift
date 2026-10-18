@@ -66,7 +66,44 @@ public enum QwenCapabilities {
         return value
     }
     public static let cloneDeliveryNotice = "Qwen cloned voices inherit delivery from their recordings. This Base model does not support tone or delivery instructions. Use a built-in or designed voice for instruction control."
+    /// Qwen voice design controls gender, age, pitch, pace, emotion and delivery, but not accent:
+    /// accent requests come out as standard American English (measured 2026-10-17, and noted by
+    /// the model's users). A recorded reference in the accent carries it through cloning.
+    public static let designAccentNotice = "Qwen voice design can't produce accents; a requested accent comes out as standard American English. For an accent, create a recorded voice from a reference recording in that accent."
+    /// Whether a voice description asks for an accent ("accent", "accented").
+    public static func describesAccent(_ description: String?) -> Bool {
+        guard let description else { return false }
+        return description.range(of: #"\baccent(s|ed)?\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
     public static func warnings(configuration: QwenVoiceConfiguration, request: SpeechRequest) -> [String] {
-        configuration.kind == .cloned && request.effectiveTone != .natural ? [cloneDeliveryNotice] : []
+        var warnings: [String] = []
+        if configuration.kind == .cloned && request.effectiveTone != .natural { warnings.append(cloneDeliveryNotice) }
+        if configuration.kind == .designed && describesAccent(configuration.description) { warnings.append(designAccentNotice) }
+        return warnings
+    }
+}
+
+/// How Qwen samples speech for a kind of voice. A designed voice is drawn afresh from its
+/// description for every passage, so it uses the VoiceDesign model's published settings (the
+/// reference implementation's defaults): the whole text in the prompt before the first frame,
+/// temperature 0.9 and no top-p cut. They keep the description's voice consistent from
+/// sentence to sentence; Chatter's steadier recorded and built-in settings let a description's
+/// voice drift between passages. Recorded and built-in voices keep those settings.
+public struct QwenGeneration: Sendable, Equatable {
+    public var temperature: Double
+    public var topP: Double
+    public var topK: Int
+    /// The reference's `non_streaming_mode`: the model reads the whole passage before speaking.
+    public var wholeTextFirst: Bool
+
+    public init(temperature: Double, topP: Double, topK: Int, wholeTextFirst: Bool) {
+        self.temperature = temperature; self.topP = topP; self.topK = topK; self.wholeTextFirst = wholeTextFirst
+    }
+
+    public static func settings(for kind: VoiceKind) -> QwenGeneration {
+        switch kind {
+        case .designed: QwenGeneration(temperature: 0.9, topP: 1.0, topK: 50, wholeTextFirst: true)
+        case .cloned, .preset: QwenGeneration(temperature: 0.7, topP: 0.8, topK: 50, wholeTextFirst: false)
+        }
     }
 }

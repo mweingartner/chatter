@@ -296,7 +296,8 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         onToken: ((Int) -> Void)? = nil,
         onInfo: ((AudioGenerationInfo) -> Void)? = nil,
         onAudioChunk: ((MLXArray) throws -> Void)? = nil,
-        isCancelled: () -> Bool = { false }
+        isCancelled: () -> Bool = { false },
+        wholeTextFirst: Bool = false
     ) throws -> MLXArray {
         guard let speechTokenizer, let tokenizer else {
             throw AudioGenerationError.modelNotInitialized(
@@ -344,7 +345,8 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
                 text: text,
                 language: language,
                 instruct: effectiveInstruct,
-                speaker: speaker
+                speaker: speaker,
+                wholeTextFirst: wholeTextFirst
             )
             inputEmbedsInit = prepared.0
             trailingTextHidden = prepared.1
@@ -861,11 +863,16 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         return embedding
     }
 
+    /// `wholeTextFirst` is the reference's `non_streaming_mode`: the whole text (and its end) is
+    /// in the prompt before the first frame, and generation then reads only padding. The
+    /// official VoiceDesign and CustomVoice entry points use it by default; otherwise the text
+    /// is fed one token per generated frame, as the reference does for voice cloning.
     func prepareGenerationInputs(
         text: String,
         language: String,
         instruct: String?,
-        speaker: String? = nil
+        speaker: String? = nil,
+        wholeTextFirst: Bool = false
     ) -> (MLXArray, MLXArray, MLXArray) {
         guard let tokenizer, let talkerConfig = config.talkerConfig else {
             fatalError("Tokenizer/config not loaded")
@@ -964,6 +971,16 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             concatenated([instructEmbed, roleEmbed, combinedEmbed], axis: 1)
         } else {
             concatenated([roleEmbed, combinedEmbed], axis: 1)
+        }
+
+        if wholeTextFirst {
+            // Text tokens 3..<-5 and the text end, each over a codec pad, then a pad over codec BOS.
+            let body = concatenated([textEmbed[0..., 3 ..< (textEmbed.dim(1) - 5), 0...], ttsEosEmbed], axis: 1)
+            let codecPads = talker.getInputEmbeddings()(
+                MLXArray([Int32](repeating: Int32(talkerConfig.codecPadId), count: body.dim(1))).reshaped(1, -1)
+            )
+            let start = ttsPadEmbed + talker.getInputEmbeddings()(MLXArray([Int32(talkerConfig.codecBosId)]).reshaped(1, 1))
+            return (concatenated([inputEmbeds, body + codecPads, start], axis: 1), ttsPadEmbed, ttsPadEmbed)
         }
 
         // Add first text token (index 3) + last codec embed

@@ -61,6 +61,8 @@ public enum SpeechTone: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
     public var cue: String {
-        self == .natural ? "" : "Speak with a \(rawValue) delivery. \(detail)"
+        guard self != .natural else { return "" }
+        let article = "aeiou".contains(rawValue.prefix(1)) ? "an" : "a"
+        return "Speak with \(article) \(rawValue) delivery. \(detail)"
     }
 }

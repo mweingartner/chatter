@@ -17,8 +17,9 @@ struct QwenVoiceSetupView: View {
             if kind == .preset {
                 Picker("Speaker",selection:$speaker) { ForEach(QwenCapabilities.speakers) { Text("\($0.id) — \($0.description)").tag($0.id) } }
             } else {
-                Text("Describe the speaker’s timbre, age range, accent, and delivery. Voice design is generative; for a consistent character across scenes, save a successful preview as a recorded voice.").foregroundStyle(.secondary)
+                Text("Describe the speaker’s gender, age range, timbre, pace, and delivery. Voice design is generative; for a consistent character across scenes, save a successful preview as a recorded voice.").foregroundStyle(.secondary)
                 TextEditor(text:$description).frame(height:140).accessibilityLabel("Voice description")
+                DesignAccentNotice(description:description)
             }
             Picker("Language",selection:$language) { ForEach(QwenCapabilities.languages,id:\.self) { Text($0).tag($0) } }
             Text("These voices support tone and natural-language delivery instructions. All synthesis runs locally.").font(.callout).foregroundStyle(.secondary)
@@ -32,5 +33,19 @@ struct QwenVoiceSetupView: View {
             guard var voice=model.voices.first(where:{$0.id == id}) else { return }
             voice.qwen=config;model.updateVoice(voice);dismiss()
         } catch { model.error=error.localizedDescription }
+    }
+}
+
+/// Shown while a voice description asks for an accent, which Qwen voice design cannot produce.
+struct DesignAccentNotice: View {
+    let description: String
+    var body: some View {
+        if QwenCapabilities.describesAccent(description) {
+            Label { Text(QwenCapabilities.designAccentNotice) } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            .font(.callout)
+            .accessibilityElement(children: .combine)
+        }
     }
 }

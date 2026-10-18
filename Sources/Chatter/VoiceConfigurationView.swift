@@ -12,7 +12,10 @@ struct VoiceConfigurationView: View {
             Text(voice.kind.title).font(.headline)
             Picker("Default language",selection:$language) { ForEach(QwenCapabilities.languages,id:\.self) { Text($0).tag($0) } }
             if voice.kind == .preset { LabeledContent("Speaker",value:voice.synthesisConfiguration.speaker ?? "") }
-            if voice.kind == .designed { TextField("Voice description",text:$description,axis:.vertical).textFieldStyle(.roundedBorder) }
+            if voice.kind == .designed {
+                TextField("Voice description",text:$description,axis:.vertical).textFieldStyle(.roundedBorder)
+                DesignAccentNotice(description:description)
+            }
             Text(voice.kind.supportsInstructions ? "Supports tone presets and natural-language instructions." : QwenCapabilities.cloneDeliveryNotice).font(.callout).foregroundStyle(.secondary)
             HStack {
                 Button("Save voice settings") {

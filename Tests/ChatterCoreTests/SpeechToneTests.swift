@@ -18,7 +18,7 @@ struct SpeechToneTests {
             let request = try SpeechRequest(voice: "loki", text: "My actual words.", tone: tone.rawValue).validated()
             #expect(request.effectiveTone == tone)
             #expect(request.text == "My actual words.")
-            if tone != .natural { #expect(tone.cue.hasPrefix("Speak with a ")); #expect(!tone.cue.contains("[")) }
+            if tone != .natural { #expect(tone.cue.hasPrefix("aeiou".contains(tone.rawValue.prefix(1)) ? "Speak with an " : "Speak with a ")); #expect(!tone.cue.contains("[")) }
         }
         for invalid in ["", "Cheerful", "[cheerful]", "invented"] {
             #expect(throws: ChatterError.self) { try SpeechRequest(voice: "loki", text: "Hello", tone: invalid).validated() }

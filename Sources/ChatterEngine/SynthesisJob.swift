@@ -33,6 +33,7 @@ struct SynthesisJob {
         let passages=try DeliveryPassages.passages(QwenPromptSafety.spokenText(c.text),maxBytes:live ? 220 : 380,instruction:instruction,supportsInstructions:voice.kind.supportsInstructions)
         guard !passages.isEmpty else { throw EngineFailure.invalid("Enter text to speak.") }
         let seed=c.seed ?? UInt64.random(in:0...UInt64(UInt32.max)); MLXRandom.seed(seed)
+        let generation=QwenGeneration.settings(for:voice.kind)
         let paced=abs(c.pace-1)>0.0001
         let unpaced=directory.appending(path:"unpaced.wav")
         let writer=try WAVStreamWriter(url:paced ? unpaced : output,sampleRate:24000,maximumSeconds: min(7200, max(1,c.maximumAudioSeconds ?? 1800)) * c.pace)
@@ -64,7 +65,7 @@ struct SynthesisJob {
                 let output = envelope.append(try Self.validated(samples))
                 if !output.isEmpty { try deliver(output) }
             }
-            let audio=try model.generateVoiceDesign(text:passage.text,instruct:prompt,language:language,conditioning:conditioning,refAudio:nil,refText:nil,temperature:Float(c.temperature ?? 0.7),topK:50,topP:0.8,repetitionPenalty:1.05,minP:0,maxTokens:2048,streamingInterval:0.8,onToken:{ _ in frames+=1;engine.noteActivity() },onAudioChunk:responsive ? { try deliverPassage($0.asArray(Float.self)) } : nil,isCancelled:{ engine.isCancelled(c.id) || ContinuousClock.now >= deadline })
+            let audio=try model.generateVoiceDesign(text:passage.text,instruct:prompt,language:language,conditioning:conditioning,refAudio:nil,refText:nil,temperature:Float(c.temperature ?? generation.temperature),topK:generation.topK,topP:Float(generation.topP),repetitionPenalty:1.05,minP:0,maxTokens:2048,streamingInterval:0.8,onToken:{ _ in frames+=1;engine.noteActivity() },onAudioChunk:responsive ? { try deliverPassage($0.asArray(Float.self)) } : nil,isCancelled:{ engine.isCancelled(c.id) || ContinuousClock.now >= deadline },wholeTextFirst:generation.wholeTextFirst)
             if responsive {
                 let tail = envelope.finish()
                 if !tail.isEmpty { try deliver(tail) }
