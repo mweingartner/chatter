@@ -28,7 +28,7 @@ public enum SpeechMode: String, CaseIterable, Sendable {
 }
 
 /// `?wait=` on speech submission and job lookup: hold the reply until the job finishes, for at most
-/// `maximum` seconds. `true` waits the maximum; a number waits that many seconds.
+/// `maximum` seconds. `true` waits the maximum; a decimal number waits that many seconds.
 public enum JobWait {
     public static let maximum: TimeInterval = 30
     /// Concurrent waiting requests allowed per credential; further requests answer at once.
@@ -41,10 +41,34 @@ public enum JobWait {
         case "true", "": return maximum
         case "false", "0": return nil
         default:
-            guard let seconds = Double(value), seconds.isFinite, seconds > 0, seconds <= maximum else {
+            guard isDecimal(value), let seconds = Double(value), seconds.isFinite, seconds > 0, seconds <= maximum else {
                 throw ChatterError.invalid("wait must be true, false or a number of seconds up to \(Int(maximum)).")
             }
             return seconds
         }
+    }
+
+    /// ASCII decimal notation only: an optional sign, digits with an optional point, and an optional
+    /// exponent (`5`, `+2.5`, `.5`, `5.`, `3e1`). Checked here rather than left to `Double(_:)`, whose
+    /// grammar differs between Swift releases: it reads hex such as `0x1E`, and `0X1E` only in older ones.
+    private static func isDecimal(_ text: String) -> Bool {
+        var rest = text.utf8[...]
+        /// Consumes up to `limit` leading bytes that pass `allowed` and returns how many it took.
+        func take(_ allowed: (UInt8) -> Bool, atMost limit: Int = .max) -> Int {
+            var count = 0
+            while count < limit, let byte = rest.first, allowed(byte) { rest.removeFirst(); count += 1 }
+            return count
+        }
+        let digit = { (byte: UInt8) in (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) }
+        let sign = { (byte: UInt8) in byte == UInt8(ascii: "+") || byte == UInt8(ascii: "-") }
+        _ = take(sign, atMost: 1)
+        let whole = take(digit)
+        let fraction = take({ $0 == UInt8(ascii: ".") }, atMost: 1) == 1 ? take(digit) : 0
+        guard whole + fraction > 0 else { return false }
+        if take({ $0 == UInt8(ascii: "e") || $0 == UInt8(ascii: "E") }, atMost: 1) == 1 {
+            _ = take(sign, atMost: 1)
+            guard take(digit) > 0 else { return false }
+        }
+        return rest.isEmpty
     }
 }

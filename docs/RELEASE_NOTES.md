@@ -1,3 +1,7 @@
+# Chatter 3.2.2 — `?wait=` reads decimal seconds only
+
+- `?wait=N` now accepts N only as a decimal number of seconds, such as `5`, `2.5` or `3e1`. Hex values such as `0x1E` are rejected with the usual `wait` message. Before, whether a hex value was accepted depended on the Swift version Chatter was built with.
+
 # Chatter 3.2.1 — designed voices follow their descriptions
 
 - Designed voices now use the VoiceDesign model's published generation settings: the model reads the whole passage before speaking, with temperature 0.9 and no top-p cut. A description such as "a mature adult male" now gives the same kind of voice every time; before, the same description could come out noticeably higher or lower from one sentence to the next.

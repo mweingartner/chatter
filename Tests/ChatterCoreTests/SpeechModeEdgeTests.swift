@@ -88,7 +88,8 @@ struct SpeechModeEdgeTests {
 
     @Test(arguments: [
         ("30", 30), ("30.0", 30), ("3e1", 30), ("+5", 5), (".5", 0.5), ("5.", 5), ("0.001", 0.001),
-        ("1e-300", 1e-300), ("5e-324", 5e-324), ("0x1A", 26), ("0x1p4", 16), ("29.999999", 29.999999),
+        ("1e-300", 1e-300), ("5e-324", 5e-324), ("29.999999", 29.999999), ("3E1", 30), ("3e+1", 30),
+        ("300e-1", 30), ("+.5", 0.5), ("007", 7), ("00.5", 0.5),
         ("30.000000000000001", 30),   // rounds to exactly 30.0 as a Double
         ("tRuE", 30), ("True", 30),
     ] as [(String, Double)])
@@ -99,8 +100,11 @@ struct SpeechModeEdgeTests {
     @Test(arguments: [
         "30.0001", "30.0000000000001", "31", "1e400", "Infinity", "-Infinity", "inF", "NaN", "nan(0x1)",
         "-0", "0.0", "0e5", "-5", "-0.001", "--5", "+-5",
-        " 5", "5 ", "\t5", "5\n", " true", "true ", "1_0", "1,5", "e5", "1e", "0X1E", "0b11", "0o7",
+        " 5", "5 ", "\t5", "5\n", " true", "true ", "1_0", "1,5", "e5", "1e", "0b11", "0o7",
         "５", "٥", "५", "²", "Ⅴ", "yes", "no", "on", "1s", "%35", "\0", "true\0",
+        // Not decimal notation, whatever the toolchain's Double(_:) makes of it.
+        "0x1A", "0X1A", "0x1E", "0X1E", "0x1p4", "0X1P4", "0x1.8p1", "0x", "0x0", "+0x5",
+        "1e+", "1e-", "1e5e1", "1.2.3", "1..5", ".", "+", "-", "+.", ".e1", "5.e", "5\u{301}",
     ])
     func waitRejectsEverythingElse(value: String) {
         #expect(Self.message { try JobWait.seconds(from: ["wait": value]) } == "wait must be true, false or a number of seconds up to 30.")
@@ -118,8 +122,10 @@ struct SpeechModeEdgeTests {
 
     /// Seeded fuzz over the characters a number can be made of (plus noise): `seconds` either throws
     /// ChatterError.invalid, returns nil only for the two "do not wait" spellings, or returns a value in
-    /// (0, 30]. It is deterministic. Metamorphic: any value in (0, 30] printed by Swift round-trips.
+    /// (0, 30] for "true", "" or ASCII decimal text only. It is deterministic. Metamorphic: any value in
+    /// (0, 30] printed by Swift round-trips.
     @Test func waitFuzzNeverEscapesItsRange() throws {
+        let decimalBytes = Set("0123456789+-.eE".utf8)
         let pieces = ["0", "1", "2", "3", "5", "9", ".", "e", "E", "+", "-", "x", "p", "a", "f", "n", "i", "t", "r", "u",
                       " ", "%", "_", "٣", "٫", "\u{0}", "true", "false", "30", "0.", "e-", "1e1", "inf", "nan"]
         for seed in UInt64(0)..<4000 {
@@ -130,7 +136,11 @@ struct SpeechModeEdgeTests {
             switch (first, second) {
             case (.success(let a), .success(let b)):
                 #expect(a == b, "seed \(seed) value \(value.debugDescription)")
-                if let a { #expect(a > 0 && a <= 30 && a.isFinite, "seed \(seed) value \(value.debugDescription) gave \(a)") }
+                if let a {
+                    #expect(a > 0 && a <= 30 && a.isFinite, "seed \(seed) value \(value.debugDescription) gave \(a)")
+                    #expect(["true", ""].contains(value.lowercased()) || value.utf8.allSatisfy(decimalBytes.contains),
+                            "seed \(seed) accepted non-decimal \(value.debugDescription)")
+                }
                 else { #expect(["false", "0"].contains(value.lowercased()), "seed \(seed) value \(value.debugDescription) gave nil") }
             case (.failure(let error), .failure):
                 guard case ChatterError.invalid = error else { Issue.record("seed \(seed): unexpected \(error)"); continue }

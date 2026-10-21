@@ -32,7 +32,7 @@ Qwen receives plain text plus separate tone/instruction fields directly. Chatter
 
 ### Waiting for the result
 
-Add `?wait=true` to `POST /v1/speech` or `GET /v1/jobs/{id}` to hold the reply until the job is completed, failed or cancelled, for at most 30 seconds (`maximumWaitSeconds`); `?wait=N` waits at most N seconds. A submission that finished in time returns 200 with the final receipt; otherwise it returns 202 with the receipt as it stands, and the client continues with `GET /v1/jobs/{id}?wait=true`. A credential may hold 8 waiting requests at once; further requests answer immediately.
+Add `?wait=true` to `POST /v1/speech` or `GET /v1/jobs/{id}` to hold the reply until the job is completed, failed or cancelled, for at most 30 seconds (`maximumWaitSeconds`); `?wait=N` waits at most N seconds, written as a decimal number such as `5` or `2.5`. A submission that finished in time returns 200 with the final receipt; otherwise it returns 202 with the receipt as it stands, and the client continues with `GET /v1/jobs/{id}?wait=true`. A credential may hold 8 waiting requests at once; further requests answer immediately.
 
 ## Quality levels
 
