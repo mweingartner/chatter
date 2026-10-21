@@ -2,12 +2,19 @@ import SwiftUI
 import UniformTypeIdentifiers
 import ChatterCore
 
-struct VoiceSetupRequest: Identifiable { let id = UUID(); let voiceID: String? }
+struct VoiceSetupRequest: Identifiable {
+    let id = UUID(); let voiceID: String?
+    /// For a new voice started from the accent route: its name, and what to record.
+    var suggestedName: String? = nil
+    var intro: String? = nil
+}
 
 struct VoiceSetupView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let existingVoiceID: String?
+    var suggestedName: String? = nil
+    var intro: String? = nil
     @State private var recorder = VoiceRecorder()
     @State private var name = "My voice"
     @State private var label = "Natural narration"
@@ -42,7 +49,7 @@ struct VoiceSetupView: View {
     ]
     var body: some View {
         VStack(spacing: 0) {
-            HStack { VStack(alignment: .leading, spacing: 5) { Text(existingVoiceID == nil ? "Create your voice" : "Add to your voice set").font(.title.bold()); Text("Build one voice from clean recordings of the same speaker.").foregroundStyle(.secondary) }; Spacer(); Button("Close", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly).disabled(busy || recorder.recording) }.padding(26)
+            HStack { VStack(alignment: .leading, spacing: 5) { Text(existingVoiceID == nil ? "Create your voice" : "Add to your voice set").font(.title.bold()); Text(intro ?? "Build one voice from clean recordings of the same speaker.").foregroundStyle(.secondary) }; Spacer(); Button("Close", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly).disabled(busy || recorder.recording) }.padding(26)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -100,6 +107,7 @@ struct VoiceSetupView: View {
             }.padding(24)
         }.frame(width: 760, height: 780)
         .onAppear {
+            if existingVoiceID == nil, let suggestedName { name = suggestedName }
             if let voice = model.voices.first(where: { $0.id == existingVoiceID }) {
                 savedReadings = Set(Self.scripts.indices.filter { index in voice.samples.contains { $0.label == Self.scripts[index].0 } })
                 scriptIndex = Self.scripts.indices.first { !savedReadings.contains($0) } ?? 0

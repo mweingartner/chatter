@@ -1,3 +1,11 @@
+# Chatter 3.3.0 — accented voices
+
+- Designing a voice with an accent or dialect now leads to a voice that has it. Qwen voice design can't produce accents, so when a description asks for one (for example "a slight Indian accent", "Scottish dialect" or "Indian English"), Chatter offers two ways to start a recorded voice from a speaker who has it:
+  - **From a macOS voice:** pick an installed macOS voice in that accent (the best match for the described gender comes first) and Chatter makes a recorded voice from it in a few seconds. The voice sounds like that macOS speaker. Indian, British, Scottish, Irish, Australian, South African and American English are recognised; add more voices in System Settings › Accessibility › Spoken Content. Apple's license limits macOS voices to personal, non-commercial use, so don't publish or share audio made with such a voice.
+  - **From a recording:** record or import 10–30 seconds of a real person with the accent, who agreed to it, for the most natural result.
+- Downloaded macOS voices (such as Aman and Tara, and every premium voice) are offered, and the whole reference passage is recorded.
+- The offer appears both while designing a voice and in an existing designed voice's settings. "Create designed voice anyway" keeps the old behaviour.
+
 # Chatter 3.2.3 — speech engine robustness fixes from upstream
 
 - The speech engine takes three Qwen3-TTS fixes from upstream MLX-Audio Swift. Codec decoding and the talker's position encoding no longer use an MLX indexing path that hands Metal empty data, which stopped the engine whenever Metal's API validation, a developer setting, was on. Each streamed audio chunk is now finished before the decoder moves on to the next. Generated audio is bit-for-bit the same as in 3.2.2.

@@ -69,11 +69,13 @@ public enum QwenCapabilities {
     /// Qwen voice design controls gender, age, pitch, pace, emotion and delivery, but not accent:
     /// accent requests come out as standard American English (measured 2026-10-17, and noted by
     /// the model's users). A recorded reference in the accent carries it through cloning.
-    public static let designAccentNotice = "Qwen voice design can't produce accents; a requested accent comes out as standard American English. For an accent, create a recorded voice from a reference recording in that accent."
-    /// Whether a voice description asks for an accent ("accent", "accented").
+    public static let designAccentNotice = "Qwen voice design can't produce accents or dialects; a requested accent comes out as standard American English. For an accent, start a recorded voice from a speaker who has it: a macOS voice in that accent, or your own recording."
+    /// Whether a voice description asks for an accent: "accent", "accented", "dialect", or a
+    /// named variety such as "Indian English".
     public static func describesAccent(_ description: String?) -> Bool {
         guard let description else { return false }
-        return description.range(of: #"\baccent(s|ed)?\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+        if description.range(of: #"\b(accent(s|ed)?|dialects?)\b"#, options: [.regularExpression, .caseInsensitive]) != nil { return true }
+        return VoiceAccents.namesVariety(description)
     }
     public static func warnings(configuration: QwenVoiceConfiguration, request: SpeechRequest) -> [String] {
         var warnings: [String] = []

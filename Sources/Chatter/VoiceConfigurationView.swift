@@ -4,6 +4,8 @@ import ChatterCore
 struct VoiceConfigurationView: View {
     @Environment(AppModel.self) private var model
     let voice:VoiceProfile
+    /// Opens the recording sheet for a new recorded voice (name, accent name).
+    var recordInstead: ((String, String?) -> Void)?
     @State private var language="Auto"
     @State private var description=""
     private let previewText="Welcome. There is so much we can achieve together. Let us take the next step with confidence."
@@ -14,7 +16,7 @@ struct VoiceConfigurationView: View {
             if voice.kind == .preset { LabeledContent("Speaker",value:voice.synthesisConfiguration.speaker ?? "") }
             if voice.kind == .designed {
                 TextField("Voice description",text:$description,axis:.vertical).textFieldStyle(.roundedBorder)
-                DesignAccentNotice(description:description)
+                AccentVoiceOffer(description:description,newVoiceName:"\(voice.name) (\(VoiceAccents.requested(in:description)?.name ?? "accented"))",language:language,recordInstead:recordInstead)
             }
             Text(voice.kind.supportsInstructions ? "Supports tone presets and natural-language instructions." : QwenCapabilities.cloneDeliveryNotice).font(.callout).foregroundStyle(.secondary)
             HStack {

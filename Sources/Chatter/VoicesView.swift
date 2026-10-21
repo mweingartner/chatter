@@ -6,6 +6,8 @@ struct VoicesView: View {
     @Environment(AppModel.self) private var model
     @State private var setup: VoiceSetupRequest?
     @State private var qwenSetup = false
+    /// A recording sheet to open once the Qwen sheet has closed (the accent route).
+    @State private var pendingSetup: VoiceSetupRequest?
     @State private var selection: String?
     @State private var editingSample: SampleEdit?
     @State private var renamed = ""
@@ -31,7 +33,7 @@ struct VoicesView: View {
                             HStack { TextField("Notes about this voice", text: $notes); Button("Save notes") { var v = voice; v.notes = notes; model.updateVoice(v) } }
                             HStack { if voice.kind == .cloned { Button("Add recordings", systemImage: "mic.badge.plus") { setup = VoiceSetupRequest(voiceID: voice.id) } }; Spacer(); Button("Remove profile", role: .destructive) { model.removeVoice(voice.id); selection = model.voices.first?.id } }
                         }
-                        VoiceConfigurationView(voice:voice)
+                        VoiceConfigurationView(voice:voice,recordInstead:{ name,accent in setup=Self.accentRecording(name:name,accent:accent) })
                         if voice.kind == .cloned {
                         Surface {
                             Text("Voice conditioning").font(.headline)
@@ -87,9 +89,17 @@ struct VoicesView: View {
             else if selection == nil { selection = model.voices.first?.id }
             refreshFields()
         }
-        .sheet(isPresented:$qwenSetup) { QwenVoiceSetupView().environment(model) }
-        .sheet(item: $setup) { request in VoiceSetupView(existingVoiceID: request.voiceID).environment(model) }
+        .sheet(isPresented:$qwenSetup,onDismiss:{ if let pending=pendingSetup { pendingSetup=nil; setup=pending } }) {
+            QwenVoiceSetupView(recordInstead:{ name,accent in pendingSetup=Self.accentRecording(name:name,accent:accent); qwenSetup=false }).environment(model)
+        }
+        .sheet(item: $setup) { request in VoiceSetupView(existingVoiceID: request.voiceID, suggestedName: request.suggestedName, intro: request.intro).environment(model) }
         .sheet(item: $editingSample) { edit in TranscriptEditor(edit: edit).environment(model) }
+    }
+    /// The recording sheet for a voice that takes its accent from a real speaker.
+    static func accentRecording(name: String, accent: String?) -> VoiceSetupRequest {
+        let who = accent.map { "a real person with \("aeiou".contains($0.lowercased().prefix(1)) ? "an" : "a") \($0) accent" } ?? "a real person with the accent you want"
+        return VoiceSetupRequest(voiceID: nil, suggestedName: name,
+                                 intro: "Record or import 10–30 seconds of \(who). Only use recordings of someone who agreed to it.")
     }
     private func refreshFields() { renamed = selected?.name ?? ""; notes = selected?.notes ?? "" }
     private func preview(_ url: URL) { guard model.activeJobs == 0 else { model.error = "Wait for speech to finish before previewing a recording."; return }; model.playback.stop(); model.playback.enqueue(url) }

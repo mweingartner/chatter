@@ -9,6 +9,9 @@ struct QwenVoiceSetupView: View {
     @State private var speaker="Aiden"
     @State private var description="A warm, clear adult voice, with an optimistic and conversational delivery."
     @State private var language="English"
+    /// Opens the recording sheet for a new recorded voice (name, accent name).
+    var recordInstead: ((String, String?) -> Void)?
+    private var accentRequested: Bool { kind == .designed && QwenCapabilities.describesAccent(description) }
     var body: some View {
         VStack(alignment:.leading,spacing:20) {
             Text("Create a Qwen voice").font(.title.bold())
@@ -19,11 +22,15 @@ struct QwenVoiceSetupView: View {
             } else {
                 Text("Describe the speaker’s gender, age range, timbre, pace, and delivery. Voice design is generative; for a consistent character across scenes, save a successful preview as a recorded voice.").foregroundStyle(.secondary)
                 TextEditor(text:$description).frame(height:140).accessibilityLabel("Voice description")
-                DesignAccentNotice(description:description)
+                AccentVoiceOffer(description:description,newVoiceName:name,language:language,prominent:true,recordInstead:recordInstead,onCreated:{ _ in dismiss() })
             }
             Picker("Language",selection:$language) { ForEach(QwenCapabilities.languages,id:\.self) { Text($0).tag($0) } }
             Text("These voices support tone and natural-language delivery instructions. All synthesis runs locally.").font(.callout).foregroundStyle(.secondary)
-            HStack { Button("Cancel") { dismiss() };Spacer();Button("Create voice") { create() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty) }
+            HStack {
+                Button("Cancel") { dismiss() };Spacer()
+                if accentRequested { Button("Create designed voice anyway") { create() }.disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || model.preparing) }
+                else { Button("Create voice") { create() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty) }
+            }
         }.padding(28).frame(width:660)
     }
     private func create() {
@@ -33,19 +40,5 @@ struct QwenVoiceSetupView: View {
             guard var voice=model.voices.first(where:{$0.id == id}) else { return }
             voice.qwen=config;model.updateVoice(voice);dismiss()
         } catch { model.error=error.localizedDescription }
-    }
-}
-
-/// Shown while a voice description asks for an accent, which Qwen voice design cannot produce.
-struct DesignAccentNotice: View {
-    let description: String
-    var body: some View {
-        if QwenCapabilities.describesAccent(description) {
-            Label { Text(QwenCapabilities.designAccentNotice) } icon: {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            }
-            .font(.callout)
-            .accessibilityElement(children: .combine)
-        }
     }
 }
