@@ -40,6 +40,8 @@ When updating, replace complete snapshots, preserve license and attribution file
 
 The standard tests use checked-in synthetic audio fixtures. To exercise on-device transcription with a private recording, set `CHATTER_TEST_RECORDING` to its absolute path and optionally `CHATTER_TEST_TRANSCRIPT` to an expected substring. Installed English speech assets are required. Recordings are not part of the source distribution.
 
+The MLX tests of the native Qwen port need Apple-silicon Metal, which CI runners lack, so they are opt-in: `CHATTER_TEST_MLX=1 swift test --filter 'QwenIndexingTests|QwenStreamingStepTests'`. They need no models. Add `MTL_DEBUG_LAYER=1` to run them under Metal API validation, which aborts on the scalar-gather indexing that 3.2.3 removed ([QWEN_PORT.md](QWEN_PORT.md)).
+
 After model setup, `chatter-tools verify plugin --bridge /Applications/Chatter.app/Contents/MacOS/chatter-mcp --voice Ryan --output /tmp/chatter-check.json` validates the live MCP catalog and generates a short WAV. Use the full tools executable path inside the app bundle. Generated outputs and reports are private local artifacts, not release contents.
 
 ## Security verification

@@ -46,7 +46,9 @@ final class ResidualVectorQuantization: Module {
         // codes: [num_quantizers, batch, time]
         var quantized = MLXArray.zeros([codes.dim(1), layers[0].codebookDim, codes.dim(2)])
         for (idx, layer) in layers.enumerated() {
-            quantized = quantized + layer.decode(codes[idx])
+            // Codes can be transposed views; avoid scalar gather's empty Metal metadata.
+            let layerCodes = codes[idx..<(idx + 1)].squeezed(axis: 0)
+            quantized = quantized + layer.decode(layerCodes)
         }
         return quantized
     }
@@ -1004,7 +1006,12 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
             wav = outConv.step(wav)
         }
 
-        return clip(wav, min: -1, max: 1)
+        let clipped = clip(wav, min: -1, max: 1)
+        // Complete this step's lazy graph before returning it, so a later step
+        // cannot race with the consumer's evaluation. Chatter's callers already
+        // evaluate each chunk on the engine worker; this keeps the step safe alone.
+        eval(clipped)
+        return clipped
     }
 
     func chunkedDecode(_ codes: MLXArray, chunkSize: Int = 300, leftContextSize: Int = 25) -> MLXArray {

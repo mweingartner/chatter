@@ -1,3 +1,7 @@
+# Chatter 3.2.3 — speech engine robustness fixes from upstream
+
+- The speech engine takes three Qwen3-TTS fixes from upstream MLX-Audio Swift. Codec decoding and the talker's position encoding no longer use an MLX indexing path that hands Metal empty data, which stopped the engine whenever Metal's API validation, a developer setting, was on. Each streamed audio chunk is now finished before the decoder moves on to the next. Generated audio is bit-for-bit the same as in 3.2.2.
+
 # Chatter 3.2.2 — `?wait=` reads decimal seconds only
 
 - `?wait=N` now accepts N only as a decimal number of seconds, such as `5`, `2.5` or `3e1`. Hex values such as `0x1E` are rejected with the usual `wait` message. Before, whether a hex value was accepted depended on the Swift version Chatter was built with.
