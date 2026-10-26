@@ -239,25 +239,29 @@ struct VoiceAccentEdgeTests {
 
     // MARK: Budget
 
-    /// Detection runs on every keystroke of an uncapped TextEditor: a megabyte of near misses, or an
-    /// accent named only at the very end, stays well inside a second per call.
+    /// Detection runs on every keystroke of an uncapped TextEditor. A megabyte of near misses, or an
+    /// accent named only at the very end, scans in linear time: ten times the text takes about ten
+    /// times as long, fastest of three runs each, so a slow CI runner slows both alike. A description
+    /// at the 2,000-byte save limit takes under a quarter of a 60 Hz frame.
     @Test func detectionStaysFastOnVeryLongDescriptions() {
         let nearMisses = String(repeating: "Indianapolis xindian Scotlandish Ukrainian he’s-not ", count: 20_000) + "accent" // ~1 MB
         let late = String(repeating: "warm mature voice ", count: 55_000) + "with a slight Irish accent"
+        #expect([VoiceAccents.requested(in: nearMisses)?.id, VoiceAccents.requested(in: late)?.id] == [nil, "irish"])
+        #expect(VoiceGender.requested(in: late) == nil)
         let clock = ContinuousClock()
-        var accents: [String?] = [], genders: [VoiceGender?] = []
-        let elapsed = clock.measure {
-            for _ in 0..<2 {
-                accents.append(VoiceAccents.requested(in: nearMisses)?.id); accents.append(VoiceAccents.requested(in: late)?.id)
-                genders.append(VoiceGender.requested(in: late))
-            }
+        func fastest(_ text: String) -> Duration {
+            (0..<3).map { _ in clock.measure { _ = VoiceAccents.requested(in: text); _ = VoiceGender.requested(in: text) } }.min()!
         }
-        #expect(accents == [nil, "irish", nil, "irish"])
-        #expect(genders == [nil, nil])
-        #expect(elapsed < .seconds(5), "four accent scans and two gender scans of ~1 MB took \(elapsed)")
+        let tenths = (String(nearMisses.suffix(nearMisses.count / 10)), String(late.suffix(late.count / 10)))
+        #expect(VoiceAccents.requested(in: tenths.1)?.id == "irish")
+        for (whole, tenth, name) in [(nearMisses, tenths.0, "near misses"), (late, tenths.1, "a late accent")] {
+            let big = fastest(whole), small = fastest(tenth)
+            #expect(big < small * 30 + .milliseconds(50), "\(name): ~1 MB took \(big), a tenth of it \(small)")
+            #expect(big < .seconds(10), "\(name): ~1 MB took \(big)")
+        }
         let saved = String(repeating: "warm mature ", count: 160) + "Indian accent"
-        let small = clock.measure { for _ in 0..<1_000 { _ = VoiceAccents.requested(in: saved); _ = VoiceGender.requested(in: saved) } }
-        #expect(small < .seconds(2), "1,000 scans of 2 KB took \(small)")
+        let batch = (0..<5).map { _ in clock.measure { for _ in 0..<100 { _ = VoiceAccents.requested(in: saved); _ = VoiceGender.requested(in: saved) } } }.min()!
+        #expect(batch < .milliseconds(400), "the fastest 100 scans of 2 KB took \(batch)")
     }
 
     /// Detection is called from views and from a detached task: shared regexes stay correct under
