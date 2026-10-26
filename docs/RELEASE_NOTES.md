@@ -1,3 +1,7 @@
+# Chatter 3.3.2 — macOS voices recover from a slow render
+
+- When a macOS voice takes too long to render a reference passage, Chatter now waits for the voice to stop before reporting it, so the next attempt starts cleanly instead of waiting behind the abandoned one.
+
 # Chatter 3.3.1 — recorded voices finish what they say
 
 - Recorded voices no longer stop partway through a reply. At Responsive and Balanced quality, the smaller speech model sometimes never ended a sentence: it kept generating near-silence until it hit its limit, and the job failed with "Generation reached its frame budget", leaving the rest unspoken. JARVIS failed this way on about half of its replies. The usual cause was a recording that ends in a long silence: a voice continues from the end of its recording, so every sentence started inside that silence. Chatter now trims each recording's edges again when it prepares the voice, ignoring clicks and short noise that kept the silence in place. A sentence that still runs on is noticed after 10 seconds instead of 20 and generated again, up to three times, before the job fails. At Responsive quality, where the sentence has already played, Chatter keeps what was said and goes on to the next sentence instead of repeating it.

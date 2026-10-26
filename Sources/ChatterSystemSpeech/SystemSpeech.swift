@@ -119,16 +119,24 @@ private enum AppKitSpeech {
         synthesizer.delegate = finish
         var timer: Task<Void, Never>?
         defer { timer?.cancel() }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            finish.continuation = continuation
-            guard synthesizer.startSpeaking(text, to: file) else {
-                finish.complete(.failure(SystemSpeech.RenderError.noAudio))
-                return
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                finish.continuation = continuation
+                guard synthesizer.startSpeaking(text, to: file) else {
+                    finish.complete(.failure(SystemSpeech.RenderError.noAudio))
+                    return
+                }
+                timer = Task { @MainActor in
+                    guard (try? await Task.sleep(for: timeout)) != nil else { return }
+                    if finish.complete(.failure(SystemSpeech.RenderError.timedOut)) { synthesizer.stopSpeaking() }
+                }
             }
-            timer = Task { @MainActor in
-                guard (try? await Task.sleep(for: timeout)) != nil else { return }
-                if finish.complete(.failure(SystemSpeech.RenderError.timedOut)) { synthesizer.stopSpeaking() }
-            }
+        } catch SystemSpeech.RenderError.timedOut {
+            // Stopping is asynchronous. Keep the synthesizer until the speech service has stopped
+            // (at most 2 s), so the next render does not start behind an abandoned one: on GitHub's
+            // runner a render straight after a timed-out one hung for its whole 60 s.
+            for _ in 0..<100 where synthesizer.isSpeaking { try? await Task.sleep(for: .milliseconds(20)) }
+            throw SystemSpeech.RenderError.timedOut
         }
     }
 
