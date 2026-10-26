@@ -61,17 +61,23 @@ struct DesignedVoiceEdgeTests {
 
     /// The setup view calls this on every keystroke, and its TextEditor is not capped at the
     /// 2,000-byte save limit. A megabyte of text, including near-miss prefixes that make a regex
-    /// backtrack, must stay well inside a frame budget per call when repeated.
+    /// backtrack, must scan in linear time: ten times the text takes about ten times as long, never
+    /// the hundredfold a backtracking scan would. Each size's fastest of three runs is compared, so
+    /// a slow or loaded CI runner slows both alike (an absolute budget failed there at 3.1 s).
     @Test func detectionIsLinearOnVeryLongDescriptions() {
         let nearMisses = String(repeating: "accen accentu xaccent ", count: 50_000) // ~1.1 MB, no match
         let late = String(repeating: "warm mature voice ", count: 60_000) + "slight accent"
         let clock = ContinuousClock()
-        var results: [Bool] = []
-        let elapsed = clock.measure {
-            for _ in 0..<3 { results.append(QwenCapabilities.describesAccent(nearMisses)); results.append(QwenCapabilities.describesAccent(late)) }
+        func fastest(_ text: String) -> Duration {
+            (0..<3).map { _ in clock.measure { _ = QwenCapabilities.describesAccent(text) } }.min()!
         }
-        #expect(results == [false, true, false, true, false, true])
-        #expect(elapsed < .seconds(3), "six scans of ~1 MB took \(elapsed)")
+        let tenths = (String(nearMisses.prefix(nearMisses.count / 10)), String(late.suffix(late.count / 10)))
+        #expect([nearMisses, late, tenths.0, tenths.1].map { QwenCapabilities.describesAccent($0) } == [false, true, false, true])
+        for (whole, tenth, name) in [(nearMisses, tenths.0, "near misses"), (late, tenths.1, "a late accent")] {
+            let big = fastest(whole), small = fastest(tenth)
+            #expect(big < small * 30 + .milliseconds(50), "\(name): ~1.1 MB took \(big), a tenth of it \(small)")
+            #expect(big < .seconds(10), "\(name): one scan of ~1.1 MB took \(big)")
+        }
         // The realistic case, a description at the 2,000-byte save limit, is far below a millisecond.
         let saved = String(repeating: "warm mature ", count: 166)
         let small = clock.measure { for _ in 0..<1_000 { _ = QwenCapabilities.describesAccent(saved) } }
