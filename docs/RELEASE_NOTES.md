@@ -1,3 +1,7 @@
+# Chatter 3.3.3 — shorter pauses between sentences
+
+- Sentences now follow each other after a natural pause of about a quarter second, instead of about half a second (measured from sound to sound: median 0.21–0.26 s across recorded and built-in voices, from 0.51–0.59 s), and a reply starts sooner. At Balanced and Studio quality, and in saved and rendered audio, each sentence keeps only a twentieth of a second of silence before its first sound and a tenth after its last, and the gap Chatter adds between sentences is shorter. The occasional stall of several seconds, when the speech model generated near-silence before or after a sentence, is gone too. Words are never shortened. At Responsive quality, which streams each sentence as it is made, only the added gap is shorter.
+
 # Chatter 3.3.2 — macOS voices recover from a slow render
 
 - When a macOS voice takes too long to render a reference passage, Chatter now waits for the voice to stop before reporting it, so the next attempt starts cleanly instead of waiting behind the abandoned one.

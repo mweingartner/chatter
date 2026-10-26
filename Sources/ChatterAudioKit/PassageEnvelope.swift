@@ -1,7 +1,8 @@
 import Foundation
 
 /// Shapes each generated passage's edges so speech starts and ends from true silence, without
-/// changing timing or depending on how the passage arrives in chunks.
+/// changing timing or depending on how the passage arrives in chunks. (A whole passage may first be
+/// shortened by `trimmingEdgeSilence`; a streamed one cannot be, once it has played.)
 ///
 /// A cloned voice continues its reference recording's room tone for a few codec frames before the
 /// first word and after the last. Played after digital silence, that tone switches on and off like a
@@ -38,7 +39,10 @@ public struct PassageEnvelope {
     /// digital silence does not hear faint hiss as speech. Chatter's speech sits 10 to 40 dB above it.
     static let heardLevel = -50.0
 
-    private let edgeFrames, hop, window, preRoll, postRoll, lookAhead, tailFrames: Int
+    /// Sound, for `trimmingEdgeSilence`, is within this many dB of the passage's loudest frame.
+    static let soundRange = 40.0
+
+    private let edgeFrames, hop, window, preRoll, postRoll, lookAhead, tailFrames, leadKeep, trailKeep, attach: Int
     /// 80 ms of quieter frames are bridged, so a stop closure ("st…", "sp…") stays with its word.
     private let bridgeHops = 16
     private var opening = Opening.undecided
@@ -61,6 +65,9 @@ public struct PassageEnvelope {
         postRoll = frames(0.080)
         lookAhead = frames(1.6)
         tailFrames = frames(0.4)
+        leadKeep = frames(0.05)
+        trailKeep = frames(0.10)
+        attach = frames(0.25)
     }
 
     public mutating func append(_ samples: [Float]) -> [Float] {
@@ -184,6 +191,46 @@ public struct PassageEnvelope {
     }
 
     // MARK: Ending
+
+    /// For a whole passage, before `append`: keeps only 50 ms of silence before its first sound and
+    /// 100 ms after its last. A cloned voice leads into each passage with 150 to 400 ms of its
+    /// recording's room tone and trails off with more, and Qwen sometimes generates seconds of
+    /// near-silence at either end (measured 2026-10-26: about 0.5 s between Scar's sentences, up to
+    /// 7 s for JARVIS). Sound is a frame at least 6 dB above the opening room tone, broadband or
+    /// pre-emphasized as for speech, and within `soundRange` of the passage's loudest broadband frame,
+    /// so neither room tone nor a loop of near-digital silence counts. (One scale for both measures:
+    /// pre-emphasis lowers a vowel by about 20 dB but not hiss.) The first and last sound belong to a
+    /// sustained run of `heardFrames` frames, or lie within 250 ms of one, like a breath before a word
+    /// or the release of a final "t", so a blip in a long silence holds nothing in place. A loud
+    /// opening has no room tone to measure and uses the range alone. A passage with no frame to
+    /// measure, or no sustained sound, is returned whole. No sustained sound, nor any sound within
+    /// 250 ms of it, is ever removed; a short burst further out is a blip and may be. The 50 ms kept
+    /// before the first sound still holds the four frames the envelope measures its room tone from.
+    public func trimmingEdgeSilence(_ samples: [Float]) -> [Float] {
+        let broadband = Self.levels(samples[...], hop: hop, window: window)
+        let emphasized = Self.levels(Self.preEmphasized(samples[...]), hop: hop, window: window)
+        guard broadband.count >= 4, let loudest = broadband.max() else { return samples }
+        let floors = (broadband: Self.median(broadband.prefix(4)), emphasized: Self.median(emphasized.prefix(4)))
+        let roomTone = floors.broadband <= Self.loudOpening
+        let bars = (broadband: max(roomTone ? floors.broadband + Self.speechRise : -.infinity, loudest - Self.soundRange),
+                    emphasized: max(roomTone ? floors.emphasized + Self.speechRise : -.infinity, loudest - Self.soundRange))
+        let sound = broadband.indices.map { broadband[$0] >= bars.broadband || emphasized[$0] >= bars.emphasized }
+        var sustained: [Range<Int>] = [], run: Int?
+        for index in 0...sound.count {
+            if index < sound.count, sound[index] { if run == nil { run = index }; continue }
+            if let begin = run, index - begin >= Self.heardFrames { sustained.append(begin..<index) }
+            run = nil
+        }
+        guard let first = sustained.first, let last = sustained.last else { return samples }
+        let reach = attach / hop
+        var firstSound = (max(0, first.lowerBound - reach)..<first.lowerBound).first { sound[$0] } ?? first.lowerBound
+        var lastSound = (last.upperBound..<min(sound.count, last.upperBound + reach)).last { sound[$0] } ?? (last.upperBound - 1)
+        // A burst that straddles the reach is kept whole, so the 50 ms before it is room tone.
+        while firstSound > 0, sound[firstSound - 1] { firstSound -= 1 }
+        while lastSound < sound.count - 1, sound[lastSound + 1] { lastSound += 1 }
+        let start = max(0, firstSound * hop - leadKeep), end = min(samples.count, lastSound * hop + window + trailKeep)
+        return start == 0 && end == samples.count ? samples : Array(samples[start..<end])
+    }
 
     /// Speech ends with the last frame above the opening room tone; after a short fade-out the rest is
     /// silence. Held audio that is all room tone fades from its start. Audio shorter than one analysis

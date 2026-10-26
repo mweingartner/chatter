@@ -87,11 +87,14 @@ struct SynthesisJob {
                 if !tail.isEmpty { try deliver(tail) }
             } else {
                 guard let audio else { throw EngineFailure.failed("Model produced invalid audio.") }
-                let body = envelope.append(try Self.validated(audio.asArray(Float.self)))
+                let body = envelope.append(envelope.trimmingEdgeSilence(try Self.validated(audio.asArray(Float.self))))
                 try deliver(body + envelope.finish())
             }
-            // Additional sentence breathing room, preserved in the final WAV and live playback.
-            if index<passages.count-1 { try deliver([Float](repeating:0,count:7200)) }
+            // A short pause between sentences, preserved in the final WAV and live playback. Whole
+            // passages keep 100 ms of silence after their last sound and 50 ms before their first, so
+            // sentences measure about a quarter second apart (about 0.55 s with 300 ms here and
+            // untrimmed edges, which Michael found far too long).
+            if index<passages.count-1 { try deliver([Float](repeating:0,count:Self.sentenceGap)) }
             engine.send(c.id,"progress",["message":"Generated passage \(index+1) of \(passages.count)","segments":index+1])
         }
         try checkCancelled();try writer.finish()
@@ -99,6 +102,9 @@ struct SynthesisJob {
         try checkCancelled(removing:output);complete=true
         return ["path":output.path,"duration":try AudioIO.duration(of:output),"elapsedSeconds":(ContinuousClock.now-start).seconds,"firstAudioSeconds":firstAudio.map { $0 as Any } ?? NSNull(),"profile":profile.rawValue,"modelID":"Qwen3/\(profile.rawValue)","engineName":"Qwen3-TTS","sampleRate":24000,"bitsPerSample":24,"seed":seed,"frames":frames,"passages":passages.count]
     }
+    /// Silence between sentences: 180 ms at 24 kHz.
+    static let sentenceGap = 4_320
+
     static func validated(_ samples: [Float]) throws -> [Float] {
         guard !samples.isEmpty, samples.allSatisfy(\.isFinite) else { throw EngineFailure.failed("Model produced invalid audio.") }
         return samples
