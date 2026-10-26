@@ -103,6 +103,521 @@ struct PassageEnvelopeTests {
         #expect(envelope.finish().count == 9_600)
     }
 
+    /// The engine asks whether a streamed passage has spoken before it decides how to recover from a
+    /// run-on: repeating a passage that already played would say it twice.
+    @Test func heardSpeechFollowsTheOpeningDecision() {
+        // Room tone, then speech: undecided until the onset is confirmed, then heard.
+        let roomThenSpeech = Passage(leadIn: 6_000, speech: [.vowel(40_000)], trail: 4_800)
+        var envelope = PassageEnvelope()
+        #expect(!envelope.heardSpeech, "nothing appended")
+        _ = envelope.append(Array(roomThenSpeech.samples[..<4_800]))
+        #expect(!envelope.heardSpeech, "room tone only, still undecided")
+        _ = envelope.append(Array(roomThenSpeech.samples[4_800...]))
+        #expect(envelope.heardSpeech)
+        _ = envelope.finish()
+        #expect(envelope.heardSpeech, "finishing keeps the decision")
+
+        // Speech from the first sample.
+        var loud = PassageEnvelope()
+        _ = loud.append(Passage(leadIn: 0, speech: [.vowel(24_000)], trail: 0).samples)
+        #expect(loud.heardSpeech)
+
+        // A run-on that never speaks: the look-ahead ends with room tone alone.
+        var silent = PassageEnvelope()
+        _ = silent.append(Passage(leadIn: 48_000, speech: [], trail: 0).samples)
+        #expect(!silent.heardSpeech, "1.6 s of room tone is not speech")
+        _ = silent.finish()
+        #expect(!silent.heardSpeech)
+
+        // Digital silence, as a built-in voice or a looping clone can produce.
+        var zeros = PassageEnvelope()
+        _ = zeros.append([Float](repeating: 0, count: 48_000))
+        #expect(!zeros.heardSpeech)
+    }
+
+    /// Metamorphic: `heardSpeech` scans the passage on a fixed hop grid from its first sample, so
+    /// every chunking reaches the same answer as one append. It is monotone (once heard, always heard;
+    /// never a value it later contradicts), and finishing never changes a decided answer.
+    @Test(arguments: 0..<24)
+    func heardSpeechIsTheSameForAnyChunking(seed: Int) {
+        var random = SeededRandom(seed: UInt64(seed) &+ 0x4EA2D)
+        let samples: [Float] = switch seed % 4 {
+        case 0: Self.randomPassage(&random, seed: seed).samples
+        case 1: Passage(leadIn: random.next(0...60_000), speech: [], trail: 0, roomToneLevel: Float(random.next(2...300)) / 10_000, seed: UInt64(seed)).samples
+        case 2: Step.signal([.room(random.next(30_000...46_000)), .square(random.next(1...20_000)), .room(random.next(0...9_000))])
+        default: Self.arbitrarySignal(&random)
+        }
+        var whole = PassageEnvelope()
+        _ = whole.append(samples)
+        let decidedWhole = whole.heardSpeech
+        _ = whole.finish()
+        let final = whole.heardSpeech
+        #expect(!decidedWhole || final, "seed \(seed): finishing withdrew speech")
+
+        var streaming = PassageEnvelope(), offset = 0, previous = false
+        while offset < samples.count {
+            let size = random.next(0...3) == 0 ? random.next(0...64) : random.next(1...24_000)
+            let end = min(samples.count, offset + size)
+            _ = streaming.append(Array(samples[offset..<end]))
+            offset = end
+            let heard = streaming.heardSpeech
+            #expect(!previous || heard, "seed \(seed): heard speech, then not, at \(offset)")
+            #expect(!heard || final, "seed \(seed): heard speech the whole passage does not have, at \(offset)")
+            previous = heard
+        }
+        #expect(streaming.heardSpeech == decidedWhole, "seed \(seed): \(samples.count) samples streamed")
+        _ = streaming.finish()
+        #expect(streaming.heardSpeech == final, "seed \(seed)")
+    }
+
+    /// Around the 1.6 s look-ahead boundary (frames start every 120 samples; the last whole frame
+    /// inside it starts at 37,920), speech is heard wherever it starts: inside the look-ahead it
+    /// decides the opening, after it the room tone keeps being measured, at any chunking. Room tone
+    /// alone is never heard. A passage too short to decide (under four 20 ms frames) has heard
+    /// nothing, even when loud.
+    @Test(arguments: [0, 6_000, 38_399, 38_400, 60_000])
+    func heardSpeechIsFoundWhereverItStarts(speechStart: Int) {
+        let input = Step.signal([.room(speechStart), .square(20_000), .room(4_800)])
+        let roomOnly = Step.signal([.room(speechStart + 24_800)])
+        for chunk in [input.count, 19_200, 997, 120] {
+            var envelope = PassageEnvelope(), quiet = PassageEnvelope()
+            for offset in stride(from: 0, to: input.count, by: chunk) { _ = envelope.append(Array(input[offset..<min(offset + chunk, input.count)])) }
+            for offset in stride(from: 0, to: roomOnly.count, by: chunk) { _ = quiet.append(Array(roomOnly[offset..<min(offset + chunk, roomOnly.count)])) }
+            #expect(envelope.heardSpeech, "speech at \(speechStart), \(chunk)-sample chunks")
+            #expect(!quiet.heardSpeech, "room tone only, \(chunk)-sample chunks")
+        }
+        for count in [1, 500, 839] {
+            var short = PassageEnvelope()
+            _ = short.append([Float](repeating: 0.5, count: count))
+            #expect(!short.heardSpeech, "\(count) samples: undecided")
+            _ = short.finish()
+            #expect(!short.heardSpeech, "\(count) samples: too short to decide")
+        }
+        var decided = PassageEnvelope()
+        _ = decided.append([Float](repeating: 0.5, count: 840))
+        #expect(decided.heardSpeech, "four frames of a loud opening")
+    }
+
+    /// The opening decision scales with the sample rate, and so does `heardSpeech`.
+    @Test(arguments: [8_000, 16_000, 22_050, 44_100, 48_000])
+    func heardSpeechScalesWithSampleRate(rate: Int) {
+        let speech = Passage(leadIn: rate / 4, speech: [.vowel(rate * 6 / 10)], trail: rate * 3 / 10, sampleRate: rate).samples
+        let room = Passage(leadIn: rate * 2, speech: [], trail: 0, sampleRate: rate).samples
+        var heard = PassageEnvelope(sampleRate: rate), silent = PassageEnvelope(sampleRate: rate)
+        _ = heard.append(speech)
+        _ = silent.append(room)
+        #expect(heard.heardSpeech && !silent.heardSpeech, "\(rate) Hz")
+    }
+
+    /// SynthesisJob keeps a streamed run-on (instead of generating it again) when `heardSpeech` is
+    /// true, so that nothing is said twice. The opening is decided within the first 1.6 s, but a
+    /// passage that opens with longer room tone keeps being measured against it: words that follow
+    /// the look-ahead are still heard, so a run-on after them is kept rather than said again.
+    @Test func speechAfterTheLookAheadIsHeard() {
+        let passage = Passage(leadIn: 40_000, speech: [.vowel(24_000)], trail: 200_000)
+        var envelope = PassageEnvelope(), delivered = 0
+        for offset in stride(from: 0, to: passage.samples.count, by: 19_200) {
+            delivered += envelope.append(Array(passage.samples[offset..<min(offset + 19_200, passage.samples.count)])).count
+        }
+        #expect(delivered >= passage.speechEnd, "the words have been released for playback")
+        #expect(envelope.heardSpeech, "speech after the look-ahead is still heard")
+    }
+
+    /// The other half of the same decision: an opening louder than −30 dBFS counts as speech from the
+    /// first sample, so a run-on that never says a word in a noisy cloned voice reports speech, and the
+    /// job keeps it ("ran on after its words; continuing") instead of generating it again: the
+    /// passage's words are never spoken.
+    @Test func loudRoomToneAloneIsNotSpeech() {
+        let noise = Float((3 * pow(10, -28 / 10.0)).squareRoot())
+        let runOn = Step.signal([.room(240_000)], noise: noise)
+        var envelope = PassageEnvelope()
+        for offset in stride(from: 0, to: runOn.count, by: 19_200) { _ = envelope.append(Array(runOn[offset..<min(offset + 19_200, runOn.count)])) }
+        withKnownIssue("a loud opening is taken as speech without any rise above it") {
+            #expect(!envelope.heardSpeech, "10 s of −28 dBFS room tone and no words")
+        }
+    }
+
+    // MARK: Late speech (after a no-speech look-ahead)
+
+    /// Property: after 1.6 s of room tone the opening is plain, so the audio must be exactly the 8 ms
+    /// edges (an independent reference) whatever follows and however it is chunked, NaN and infinity
+    /// included: the late scan only reads. For finite input `heardSpeech` after any append equals that
+    /// of the same prefix appended whole, it switches on exactly when the frame (on the 120-sample
+    /// grid) that completes a sustained rise has been appended, and never off.
+    @Test(arguments: 0..<16)
+    func lateScanNeverChangesTheAudioAndIsChunkInvariant(seed: Int) {
+        var random = SeededRandom(seed: UInt64(seed) &+ 0x1A7E)
+        let roomLevels: [Float] = [0, 1e-30, 1e-6, 0.003, 0.02]
+        var samples = Step.signal([.room(random.next(38_400...50_000))], noise: roomLevels[random.next(0...4)], seed: UInt64(seed))
+        samples += Self.arbitrarySignal(&random).prefix(30_000)
+        let nonFinite = seed % 6 == 5
+        if nonFinite, !samples.isEmpty {
+            for _ in 0..<random.next(1...3) { samples[random.next(38_400...(samples.count - 1))] = random.next(0...1) == 0 ? .nan : -.infinity }
+        }
+        let reference = Self.plainEdges(samples)
+        var streaming = PassageEnvelope(), output: [Float] = [], offset = 0, flags: [(Int, Bool)] = []
+        while offset < samples.count {
+            let size = [1, 119, 121, 479, 960, 997, 19_200, random.next(0...30_000)][random.next(0...7)]
+            let end = min(samples.count, offset + size)
+            output += streaming.append(Array(samples[offset..<end]))
+            offset = end
+            flags.append((offset, streaming.heardSpeech))
+        }
+        output += streaming.finish()
+        #expect(Self.bits(output) == Self.bits(reference), "seed \(seed): the late scan changed the audio")
+        #expect(Self.bits(Self.shaped(samples)) == Self.bits(reference), "seed \(seed): whole")
+        #expect(zip(flags, flags.dropFirst()).allSatisfy { !$0.1 || $1.1 }, "seed \(seed): heard, then not")
+        guard !nonFinite else { return }
+        // Where the whole-prefix envelope first hears speech: bracketed by the streamed flags, found on
+        // the 120-sample grid by a third chunking, then confirmed with whole prefixes on either side.
+        func heard(_ n: Int) -> Bool { var e = PassageEnvelope(); _ = e.append(Array(samples[..<n])); return e.heardSpeech }
+        guard let first = flags.firstIndex(where: \.1) else {
+            #expect(!heard(samples.count), "seed \(seed): the whole passage heard speech that streaming did not")
+            return
+        }
+        // (Before 38,400 samples the opening is undecided, and no late frame can have completed.)
+        let before = max(38_400, first > 0 ? flags[first - 1].0 : 0)
+        var probe = PassageEnvelope(), onset = before
+        _ = probe.append(Array(samples[..<before]))
+        while !probe.heardSpeech, onset < flags[first].0 {
+            let next = min(flags[first].0, (onset / 120 + 1) * 120)
+            _ = probe.append(Array(samples[onset..<next]))
+            onset = next
+        }
+        #expect(probe.heardSpeech, "seed \(seed): heard after \(flags[first].0) samples streamed, but not in 120-sample steps")
+        #expect(onset % 120 == 0 && onset >= 38_520, "seed \(seed): heard at \(onset), not when a frame on the grid completed")
+        #expect(heard(onset) && !heard(onset - 1), "seed \(seed): whole prefixes disagree about \(onset)")
+        for (n, flag) in flags {
+            #expect(flag == (n >= onset), "seed \(seed): streamed flag \(flag) after \(n) samples, onset \(onset)")
+        }
+    }
+
+    /// No blind spot at the look-ahead's edge: a 125 ms word wherever it starts is heard exactly when
+    /// the 16th consecutive 20 ms frame touching it is complete (frames start every 120 samples),
+    /// inside the 1.6 s or after it, appended whole or ending in one-sample appends. A 1 ms click in
+    /// the same places is never heard: a blip in a silence loop is not speech.
+    @Test(arguments: [6_000, 37_919, 37_920, 38_039, 38_040, 38_041, 38_279, 38_399, 38_400, 38_401, 38_519, 38_520, 38_521, 45_007, 120_000])
+    func aWordIsHeardWhenItsSustainedRiseCompletes(start: Int) {
+        var click = PassageEnvelope()
+        _ = click.append(Step.signal([.room(start), .square(24), .room(9_600)]))
+        #expect(!click.heardSpeech, "click at \(start)")
+        let input = Step.signal([.room(start), .square(3_000), .room(9_600)])
+        let onset = ((start - 480) / 120 + 1) * 120 + 480 + (PassageEnvelopeTests.heardFrames - 1) * 120
+        var streamed = PassageEnvelope()
+        for offset in stride(from: 0, to: onset - 3, by: 9_600) { _ = streamed.append(Array(input[offset..<min(onset - 3, offset + 9_600)])) }
+        for i in (onset - 3)..<(onset - 1) { _ = streamed.append([input[i]]) }
+        #expect(!streamed.heardSpeech, "word at \(start): heard before sample \(onset)")
+        _ = streamed.append([input[onset - 1]])
+        #expect(streamed.heardSpeech, "word at \(start): not heard at sample \(onset)")
+        var whole = PassageEnvelope(), before = PassageEnvelope()
+        _ = whole.append(Array(input[..<onset]))
+        _ = before.append(Array(input[..<(onset - 1)]))
+        #expect(whole.heardSpeech && !before.heardSpeech, "word at \(start), whole prefixes")
+    }
+
+    /// The same at other sample rates, where the look-ahead's last frame does not end on it.
+    @Test(arguments: [16_000, 22_050, 44_100])
+    func lateScanHasNoBlindSpotAtOtherRates(rate: Int) {
+        let timing = Timing(rate)
+        let lastFrameEnd = (timing.lookAhead - timing.window) / timing.hop * timing.hop + timing.window
+        for start in [lastFrameEnd - 1, lastFrameEnd, (lastFrameEnd + timing.lookAhead) / 2, timing.lookAhead - 1, timing.lookAhead, timing.lookAhead + timing.hop + 7] {
+            let input = Step.signal([.room(start), .square(rate / 8, 0.6), .room(rate / 2)])
+            let onset = max(0, (start - timing.window) / timing.hop + 1) * timing.hop + timing.window + (Self.heardFrames - 1) * timing.hop
+            var at = PassageEnvelope(sampleRate: rate), justBefore = PassageEnvelope(sampleRate: rate)
+            _ = justBefore.append(Array(input[..<(onset - 1)]))
+            _ = at.append(Array(input[..<(onset - 1)]))
+            _ = at.append([input[onset - 1]])
+            #expect(!justBefore.heardSpeech && at.heardSpeech, "\(rate) Hz, click at \(start): expected at \(onset)")
+        }
+    }
+
+    /// A quiet fricative ("f", "s") barely rises in broadband level (under 2 dB here): only its
+    /// pre-emphasized level marks it, after the look-ahead as within it. A fainter one is heard in
+    /// neither place: the rule is the same on both sides of 1.6 s.
+    @Test(arguments: [0.0035, 0.002])
+    func aQuietFricativeIsHeardAfterTheLookAheadAsWithinIt(strength: Double) {
+        for leadIn in [6_000, 45_000] {
+            let passage = Passage(leadIn: leadIn, speech: [.fricative(2_880, strength: strength)], trail: 4_800)
+            let floor = Self.level(Array(passage.samples[..<960]))
+            let rise = stride(from: leadIn - 480, to: leadIn + 2_880, by: 120).map { Self.level(Array(passage.samples[$0..<($0 + 480)])) - floor }.max()!
+            #expect(rise < 2, "lead-in \(leadIn): the fricative is not quiet (\(rise) dB)")
+            for chunk in [passage.samples.count, 960, 121] {
+                var envelope = Self.streamedAfterTheLookAhead(passage.samples, chunk: chunk)
+                #expect(envelope.heardSpeech == (strength > 0.003), "strength \(strength), lead-in \(leadIn), \(chunk)-sample chunks")
+                _ = envelope.finish()
+                #expect(envelope.heardSpeech == (strength > 0.003), "strength \(strength), lead-in \(leadIn), finished")
+            }
+        }
+    }
+
+    /// After the look-ahead too, only a 15 dB rise is speech: a 14 dB murmur is not.
+    @Test(arguments: [14.0, 15.3])
+    func onlyAFifteenDecibelRiseIsLateSpeech(rise: Double) {
+        let input = Step.signal([.room(45_000), .square(9_600, Step.amplitude(rise: rise)), .room(4_800)])
+        for chunk in [input.count, 960, 119] {
+            let envelope = Self.streamedAfterTheLookAhead(input, chunk: chunk)
+            #expect(envelope.heardSpeech == (rise >= 15), "\(rise) dB, \(chunk)-sample chunks")
+        }
+    }
+
+    /// Pre-emphasis runs across appends: each append's first sample is emphasized against the previous
+    /// append's last. A cloned voice with a DC offset shows why it matters: emphasized against zero
+    /// instead, the first sample of each append keeps the whole offset, lifting its frame about 0.1 dB,
+    /// enough to make a hiss 14.95 dB above the opening heard in 40 ms chunks but not whole. (DC plus a
+    /// tone at half the sample rate, with no noise, so the levels are exact.)
+    @Test(arguments: [14.95, 15.05])
+    func preEmphasisCarriesAcrossAppends(rise: Double) {
+        let offset: Float = 0.02, hiss = Float((0.0025 * 0.02 * 0.02 * (pow(10, rise / 10) - 1) / 3.8025).squareRoot())
+        let input = [Float](repeating: offset, count: 45_000) + (0..<20_000).map { offset + ($0 % 2 == 0 ? hiss : -hiss) }
+        for chunk in [input.count, 960, 997, 121] {
+            let envelope = Self.streamedAfterTheLookAhead(input, chunk: chunk)
+            #expect(envelope.heardSpeech == (rise >= 15), "\(rise) dB, \(chunk)-sample chunks")
+        }
+    }
+
+    /// Non-finite samples never reach the envelope from SynthesisJob (`validated` rejects them), but
+    /// it stays total: a single infinite or NaN sample after the look-ahead is not sustained speech,
+    /// and neither changes the audio from the plain edges.
+    @Test(arguments: [Float.infinity, -.infinity, .nan])
+    func nonFiniteLateSamplesAreHandled(value: Float) {
+        var input = Step.signal([.room(60_000)])
+        input[50_000] = value
+        for chunk in [input.count, 960, 121] {
+            var output: [Float] = []
+            var envelope = Self.streamedAfterTheLookAhead(input, chunk: chunk) { output += $0 }
+            #expect(!envelope.heardSpeech, "\(value), \(chunk)-sample chunks")
+            output += envelope.finish()
+            #expect(Self.bits(output) == Self.bits(Self.plainEdges(input)), "\(value), \(chunk)-sample chunks")
+        }
+    }
+
+    /// A run-on is about 170 s of room tone. The late scan keeps less than one 20 ms frame between
+    /// appends and the plain opening holds only its 8 ms edge, so after 160 s in SynthesisJob-sized
+    /// 40 ms chunks an append costs what it did just after the look-ahead. (Timed by interleaving the
+    /// two envelopes' appends and taking the fastest of each, so parallel tests slow both alike.) Once
+    /// speech is heard the scan lets go.
+    @Test func aLongRunOnKeepsTheScanBoundedAndLinear() throws {
+        var random = SeededRandom(seed: 160)
+        let chunk = 960, count = 4_000, clock = ContinuousClock()
+        let room = (0..<(chunk * 64)).map { _ in Float(0.003 * random.unit()) }
+        func next(_ i: Int) -> [Float] { let offset = (i % 64) * chunk; return Array(room[offset..<(offset + chunk)]) }
+        var old = PassageEnvelope(), young = PassageEnvelope(), largestScan = 0, largestPending = 0
+        for i in 0..<count {
+            _ = old.append(next(i))
+            // The opening is decided by the 40th chunk (1.6 s); until then it holds the look-ahead.
+            if i >= 40, i % 10 == 0 {
+                let state = try Self.state(of: old)
+                largestScan = max(largestScan, state.scan); largestPending = max(largestPending, state.pending)
+                if largestScan >= 480 || largestPending > 192 { break }   // fail now, not after a quadratic run
+            }
+        }
+        #expect(!old.heardSpeech)
+        #expect(largestScan > 0 && largestScan < 480, "scan buffer reached \(largestScan) samples")
+        #expect(largestPending == 192, "held \(largestPending) samples")
+        for i in 0..<41 { _ = young.append(next(i)) }
+        var oldTimes: [Duration] = [], youngTimes: [Duration] = []
+        for i in 0..<200 {
+            let samples = next(i)
+            oldTimes.append(clock.measure { _ = old.append(samples) })
+            youngTimes.append(clock.measure { _ = young.append(samples) })
+        }
+        let early = youngTimes.min()!, late = oldTimes.min()!
+        #expect(late < early * 2 + .microseconds(50), "an append after 160 s took \(late), after 1.6 s \(early)")
+        _ = old.append(Step.signal([.square(chunk * 3)]))
+        #expect(old.heardSpeech, "a word after 160 s of room tone")
+        #expect(try Self.state(of: old).scan == 0)
+        _ = old.append(next(0))
+        #expect(try Self.state(of: old).scan == 0, "the scan stops once speech is heard")
+    }
+
+    // MARK: Sustained runs
+
+    /// Property against an independent reference (`referenceHeard`: every frame of the whole passage
+    /// summed directly, no running sums, no 1.6 s blocks): after every append `heardSpeech` is true
+    /// exactly once the frame that completes 16 consecutive 15 dB frames has arrived. Layouts mix
+    /// room-tone, plain and loud openings with bursts mostly too short or too quiet to count and short
+    /// gaps that break a run, over up to 8 s (several scan blocks). Appends run from one sample to
+    /// several blocks, landing 130 samples before the reference onset and then one sample at a time.
+    @Test(arguments: 0..<16)
+    func heardSpeechMatchesAnIndependentFrameScan(seed: Int) throws {
+        var random = SeededRandom(seed: UInt64(seed) &+ 0x0B5E)
+        var samples: [Float] = [], reference: (at: Int?, margin: Double) = (nil, 0)
+        for _ in 0..<8 {   // redraw any layout with a frame within rounding of a threshold
+            samples = Self.burstyPassage(&random, seed: seed)
+            reference = Self.referenceHeard(samples)
+            if reference.margin > 1e-3 { break }
+        }
+        try #require(reference.margin > 1e-3, "seed \(seed): no layout clear of the thresholds")
+        var envelope = PassageEnvelope(), offset = 0
+        while offset < samples.count {
+            // While undecided every append re-measures the look-ahead, so those appends are larger.
+            var size = offset < 38_400 ? [960, 4_799, 19_200, 38_400, 100_000][random.next(0...4)]
+                : [1, 119, 120, 121, 479, 480, 481, 960, 4_800, 38_040, 38_400, random.next(0...120_000)][random.next(0...11)]
+            if let at = reference.at {
+                if offset < at - 130, offset + size > at - 130 { size = at - 130 - offset }
+                if (at - 130)..<(at + 2) ~= offset { size = 1 }
+            }
+            let end = min(samples.count, offset + size)
+            _ = envelope.append(Array(samples[offset..<end]))
+            offset = end
+            let expected = reference.at.map { offset >= $0 } ?? false
+            guard envelope.heardSpeech == expected else {
+                Issue.record("seed \(seed): heardSpeech \(!expected) after \(offset) of \(samples.count) samples, reference onset \(reference.at.map(String.init) ?? "none")")
+                return
+            }
+        }
+        _ = envelope.finish()
+        #expect(envelope.heardSpeech == (reference.at != nil), "seed \(seed): finished")
+    }
+
+    /// The scan measures 1.6 s blocks of 317 frames from wherever its buffer starts: the first sample
+    /// for one whole append (seams at the frames starting 38,040, 76,080, 114,120), or where an earlier
+    /// append left it (after 50,000 samples, 49,560, so the next append's seam is 87,600). A word whose
+    /// 16-frame run has `before` frames ahead of a seam is heard exactly when its 16th frame completes:
+    /// not early (a frame counted twice), not late or never (one skipped, or the run reset at the seam).
+    @Test(arguments: [0, 1, 2, 8, 14, 15, 16])
+    func aRunAcrossAScanBlockSeamIsCountedOnce(before: Int) {
+        for (first, seam) in [(nil, 76_080), (nil, 114_120), (50_000, 87_600)] as [(Int?, Int)] {
+            let firstFrame = seam - before * 120
+            // 361 samples into the frame starting at `firstFrame`, so it touches that frame and not the one before.
+            let input = Step.signal([.room(firstFrame + 361), .square(3_000), .room(4_800)])
+            let onset = firstFrame + (Self.heardFrames - 1) * 120 + 480
+            #expect(Self.referenceHeard(input).at == onset, "\(before) frames before \(seam): the reference disagrees")
+            func heard(_ n: Int) -> Bool {
+                var envelope = PassageEnvelope()
+                if let first {
+                    _ = envelope.append(Array(input[..<first]))
+                    _ = envelope.append(Array(input[first..<n]))
+                } else {
+                    _ = envelope.append(Array(input[..<n]))
+                }
+                return envelope.heardSpeech
+            }
+            #expect(heard(onset) && !heard(onset - 1), "\(before) frames before the seam at \(seam), first append \(first.map(String.init) ?? "whole"): expected at \(onset)")
+        }
+    }
+
+    /// Pre-emphasis also runs across the scan's 1.6 s blocks within one append: a block's first sample
+    /// is emphasized against the previous block's last. With a DC offset, 15 frames of loud hiss end at
+    /// the seam at 76,080 and the frame starting there holds a hiss 14.95 dB above the opening (with
+    /// the loud hiss carried into its first sample, still under 15 dB). Emphasized against zero
+    /// instead, that sample keeps the whole offset and lifts the frame over 15 dB: a 16th frame that
+    /// is not there. (DC plus tones at half the sample rate, with no noise, so the levels are exact.)
+    @Test func preEmphasisCarriesAcrossScanBlocks() {
+        let offset: Float = 0.03, seam = 76_080
+        func hiss(_ rise: Double) -> Float { Float((0.0025 * Double(offset * offset) * (pow(10, rise / 10) - 1) / 3.8025).squareRoot()) }
+        let loud = hiss(25), quiet = hiss(14.95)
+        let input = (0..<(seam + 4_800)).map { i -> Float in
+            let h: Float = (seam - 1_440)..<seam ~= i ? loud : seam..<(seam + 2_400) ~= i ? quiet : 0
+            return offset + (i % 2 == 0 ? h : -h)
+        }
+        let reference = Self.referenceFrames(input), seamFrame = seam / 120
+        #expect(Array(reference.passes[(seamFrame - 16)...(seamFrame + 1)]) == [false] + [Bool](repeating: true, count: 15) + [false, false])
+        #expect(reference.margins[seamFrame] > 0.01, "the frame on the seam is \(reference.margins[seamFrame]) dB from 15 dB")
+        #expect(Self.referenceHeard(input).at == nil)
+        var whole = PassageEnvelope()
+        _ = whole.append(input)
+        #expect(!whole.heardSpeech, "a 16th frame was counted at the seam")
+        _ = whole.finish()
+        #expect(!whole.heardSpeech)
+    }
+
+    /// A sustained rise interrupted by one quiet frame starts counting again: 15 rising frames, one
+    /// quiet frame and 15 more is not speech, at any chunking, inside the look-ahead (a room-tone
+    /// opening) or after it (plain). One more rising frame at the end is, exactly when it completes.
+    @Test(arguments: [6_000, 45_000])
+    func oneQuietFrameRestartsTheCount(start: Int) throws {
+        // `start` is on the 120-sample grid. The first burst touches the 15 frames from start − 360;
+        // the 480-sample gap holds exactly the frame at start + 1,440 (at this room tone, the burst's
+        // last step carried into it by pre-emphasis stays well under 15 dB); the second burst touches
+        // the 15 (or 16) frames from start + 1,560.
+        func input(second: Int) -> [Float] {
+            Step.signal([.room(start), .square(1_440), .room(480), .square(second), .room(4_800)], noise: 0.006)
+        }
+        let broken = input(second: 1_440), completed = input(second: 1_560), base = start / 120
+        let run = [Bool](repeating: true, count: 15)
+        try #require(Array(Self.referenceFrames(broken).passes[(base - 4)...(base + 28)]) == [false] + run + [false] + run + [false],
+                     "the layout does not have the frames it describes")
+        #expect(Self.referenceHeard(broken).at == nil)
+        let onset = start + 3_360 + 480
+        #expect(Self.referenceHeard(completed).at == onset)
+        let first = start < 38_400 ? 0 : 38_437
+        for chunk in [broken.count, 960, 479, 119] {
+            var envelope = Self.streamedAfterTheLookAhead(broken, chunk: chunk, first: first)
+            #expect(!envelope.heardSpeech, "15 + 15 frames at \(start), \(chunk)-sample chunks")
+            _ = envelope.finish()
+            #expect(!envelope.heardSpeech, "15 + 15 frames at \(start), \(chunk)-sample chunks, finished")
+            #expect(Self.streamedAfterTheLookAhead(completed, chunk: chunk, first: first).heardSpeech, "16 frames at \(start), \(chunk)-sample chunks")
+        }
+        // One sample at a time from before the quiet frame to past the onset: every position of an
+        // append boundary relative to the quiet frame and to the frame that completes the run.
+        for layout in [broken, completed] {
+            var envelope = PassageEnvelope(), switchedOn: Int?
+            _ = envelope.append(Array(layout[..<(start + 1_300)]))
+            for n in (start + 1_300)..<(onset + 240) {
+                _ = envelope.append([layout[n]])
+                if envelope.heardSpeech, switchedOn == nil { switchedOn = n + 1 }
+            }
+            #expect(switchedOn == (layout == completed ? onset : nil), "\(start): heard after \(switchedOn.map(String.init) ?? "never")")
+        }
+    }
+
+    /// The deciding append can end anywhere in a word's sustained run: the frames it has measured are
+    /// counted then, and the run carries on into the next append. (The frame starting at 5,640 decides
+    /// a room-tone opening when 6,120 samples have arrived; the run completes at 7,920.)
+    @Test func theRunCarriesOnFromTheDecidingAppend() {
+        let input = Step.signal([.room(6_000), .square(3_000), .room(4_800)])
+        #expect(Self.referenceHeard(input).at == 7_920)
+        for cut in [6_119, 6_120, 6_121, 6_239, 6_240, 6_600, 7_799, 7_800, 7_801, 7_919, 7_920, 7_921] {
+            var envelope = PassageEnvelope()
+            _ = envelope.append(Array(input[..<cut]))
+            #expect(envelope.heardSpeech == (cut >= 7_920), "decided at \(cut)")
+            _ = envelope.append(Array(input[cut..<max(cut, 7_919)]))
+            #expect(envelope.heardSpeech == (cut >= 7_920), "\(cut), then up to 7,919")
+            _ = envelope.append(Array(input[max(cut, 7_919)...]))
+            #expect(envelope.heardSpeech, "\(cut), then the rest")
+        }
+    }
+
+    /// A quiet fricative of 120 ms or more is still heard (at the default strength from about 80 ms):
+    /// in the look-ahead, after it, across a scan block's seam within one append, over other room tone,
+    /// in any chunking.
+    @Test(arguments: [2_880, 4_800, 12_000])
+    func aQuietFricativeOfAHundredAndTwentyMillisecondsIsHeard(length: Int) {
+        for (leadIn, seed) in [(6_000, 7), (45_000, 8), (76_080 - length / 2, 9), (114_120 - 1_440, 10)] {
+            let passage = Passage(leadIn: leadIn, speech: [.fricative(length)], trail: 4_800, seed: UInt64(seed))
+            for chunk in [passage.samples.count, 960, 121] {
+                var envelope = Self.streamedAfterTheLookAhead(passage.samples, chunk: chunk, first: leadIn < 38_400 ? 0 : 38_437)
+                #expect(envelope.heardSpeech, "\(length)-sample fricative at \(leadIn), \(chunk)-sample chunks")
+                _ = envelope.finish()
+                #expect(envelope.heardSpeech, "\(length)-sample fricative at \(leadIn), \(chunk)-sample chunks, finished")
+            }
+        }
+    }
+
+    /// A blip touching at most 15 frames is never heard, however loud, at any phase of the 120-sample
+    /// grid and on either side of the look-ahead. At full level, where pre-emphasis also lifts the frame
+    /// starting on the first sample after it, that is up to 1,320 samples (55 ms): because frames
+    /// overlap, a loud burst only 1,321 samples long can touch 16. Nor is a silence loop of such blips
+    /// 25 ms apart heard, with exactly one quiet frame between them.
+    @Test(arguments: [24, 480, 1_200, 1_320])
+    func aLoudBlipIsNeverHeard(length: Int) {
+        for base in [6_000, 45_000] {
+            for phase in [0, 1, 60, 119] {
+                let input = Step.signal([.room(base + phase), .square(length, 0.9), .room(9_600)])
+                var envelope = PassageEnvelope()
+                _ = envelope.append(input)
+                #expect(!envelope.heardSpeech, "\(length)-sample blip at \(base + phase)")
+                _ = envelope.finish()
+                #expect(!envelope.heardSpeech, "\(length)-sample blip at \(base + phase), finished")
+            }
+            let loop = Step.signal([.room(base)] + [Step.Part](repeating: .square(length, 0.9), count: 40).flatMap { [$0, .room(600)] })
+            var envelope = PassageEnvelope()
+            _ = envelope.append(loop)
+            #expect(!envelope.heardSpeech, "a loop of \(length)-sample blips from \(base)")
+        }
+    }
+
     @Test func roomToneWithoutSpeechKeepsOnlyShortEdges() {
         let passage = Passage(leadIn: 48_000, speech: [], trail: 0)
         #expect(Self.shaped(passage.samples) == Self.plainEdges(passage.samples))
@@ -575,6 +1090,111 @@ struct PassageEnvelopeTests {
         for i in 0..<min(edge, output.count) { output[i] *= gain(i) }
         for i in max(0, output.count - edge)..<output.count { output[i] *= gain(output.count - 1 - i) }
         return output
+    }
+
+    /// Appends the 1.6 s look-ahead and 37 samples more at once (deciding the opening, off the 120-sample
+    /// grid), then the rest in `chunk`-sample appends: the late scan sees every chunking, without the
+    /// cost of re-deciding an undecided opening on each small append.
+    /// (`first: 0` streams in `chunk`-sample appends from the first sample.)
+    static func streamedAfterTheLookAhead(_ samples: [Float], chunk: Int, first: Int = 38_437, output: ([Float]) -> Void = { _ in }) -> PassageEnvelope {
+        var envelope = PassageEnvelope()
+        let first = min(samples.count, first)
+        output(envelope.append(Array(samples[..<first])))
+        for offset in stride(from: first, to: samples.count, by: chunk) { output(envelope.append(Array(samples[offset..<min(offset + chunk, samples.count)]))) }
+        return envelope
+    }
+
+    /// A passage that opens with digital silence measures nothing but its own quiet: faint hiss after
+    /// it is not speech however far it rises above zero, and a word is, inside the look-ahead or after.
+    /// (A run-on that opened that way and looped faint hiss was kept, its words never spoken.)
+    @Test(arguments: [2_000, 45_000])
+    func faintHissAfterDigitalSilenceIsNotSpeech(zeros: Int) {
+        // Down to −56 dBFS: pre-emphasis lifts white hiss about 3 dB, so −52 dBFS hiss reaches the −50 bar.
+        for hiss in [-105.0, -85.0, -65.0, -56.0] {
+            let amplitude = Float((3 * pow(10, hiss / 10)).squareRoot())
+            let input = [Float](repeating: 0, count: zeros) + Step.signal([.room(60_000)], noise: amplitude)
+            for chunk in [input.count, 960] {
+                var envelope = PassageEnvelope()
+                for offset in stride(from: 0, to: input.count, by: chunk) { _ = envelope.append(Array(input[offset..<min(offset + chunk, input.count)])) }
+                #expect(!envelope.heardSpeech, "\(hiss) dBFS hiss after \(zeros) zeros, \(chunk)-sample chunks")
+            }
+        }
+        var word = PassageEnvelope()
+        _ = word.append([Float](repeating: 0, count: zeros) + Step.signal([.square(3_000)]))
+        #expect(word.heardSpeech, "a word after \(zeros) zeros")
+    }
+
+    /// `PassageEnvelope.heardFrames`: consecutive frames that make a rise sustained speech.
+    static let heardFrames = 16
+
+    /// An independent reference for the speech scan at 24 kHz: every 20 ms frame of the whole passage,
+    /// every 120 samples, summed directly (no running sums, no 1.6 s blocks), pre-emphasized as one
+    /// stream, against the median of the first four frames. `passes[i]`: frame i is 15 dB above that
+    /// floor and at least −50 dBFS, broadband or pre-emphasized. `loud`: the opening is over −30 dBFS
+    /// (nil under four frames). `margins[i]`: how near frame i came to either threshold, in dB.
+    static func referenceFrames(_ x: [Float]) -> (passes: [Bool], margins: [Double], loud: Bool?, loudMargin: Double) {
+        let hop = 120, window = 480
+        guard x.count >= window + 3 * hop else { return ([], [], nil, .infinity) }
+        var emphasized = x, previous: Float = 0
+        for i in emphasized.indices { let current = emphasized[i]; emphasized[i] = current - 0.95 * previous; previous = current }
+        func level(_ s: [Float], _ start: Int) -> Double {
+            var sum = 0.0
+            for i in start..<(start + window) { sum += Double(s[i]) * Double(s[i]) }
+            return 10 * log10(sum / Double(window) + 1e-14)
+        }
+        let starts = Array(stride(from: 0, through: x.count - window, by: hop))
+        let broadband = starts.map { level(x, $0) }, emphasis = starts.map { level(emphasized, $0) }
+        func median(_ v: ArraySlice<Double>) -> Double { let s = v.sorted(); return (s[1] + s[2]) / 2 }
+        let opening = (median(broadband.prefix(4)), median(emphasis.prefix(4)))
+        let bars = (max(opening.0 + 15, -50), max(opening.1 + 15, -50))
+        let rises = starts.indices.map { (broadband[$0] - bars.0, emphasis[$0] - bars.1) }
+        return (rises.map { $0.0 >= 0 || $0.1 >= 0 }, rises.map { min(abs($0.0), abs($0.1)) },
+                opening.0 > -30, abs(opening.0 + 30))
+    }
+
+    /// The sample count after which `heardSpeech` must first be true (nil: never), from
+    /// `referenceFrames`, and the smallest threshold margin among the frames that decide it.
+    static func referenceHeard(_ x: [Float]) -> (at: Int?, margin: Double) {
+        let frames = referenceFrames(x)
+        guard let loud = frames.loud else { return (nil, .infinity) }
+        if loud { return (840, frames.loudMargin) }
+        var run = 0, margin = frames.loudMargin
+        for i in frames.passes.indices {
+            margin = min(margin, frames.margins[i])
+            run = frames.passes[i] ? run + 1 : 0
+            if run >= heardFrames { return (i * 120 + 480, margin) }
+        }
+        return (nil, margin)
+    }
+
+    /// Room tone (over 1.6 s for a plain opening, shorter for a room-tone one, none for a loud one),
+    /// then up to 8 s of square bursts 8 to 40 dB above it, mostly too short to be sustained (1 to
+    /// 100 ms), apart by nothing to 250 ms: many runs that break, reach 15 frames, or cross a scan
+    /// block's seam.
+    fileprivate static func burstyPassage(_ random: inout SeededRandom, seed: Int) -> [Float] {
+        let noise: Float = [0.001, 0.003, 0.01][random.next(0...2)]
+        let leadIn = seed % 8 == 7 ? 0 : seed % 4 == 0 ? random.next(900...30_000) : random.next(38_400...90_000)
+        var parts: [Step.Part] = [.room(leadIn)], total = leadIn
+        let target = random.next(40_000...200_000)
+        while total < target {
+            let gap = [0, random.next(1...600), random.next(600...6_000)][random.next(0...2)]
+            let rise = [8.0, 14.0, 17.0, 25.0, 40.0][random.next(0...4)]
+            let length = random.next(0...5) == 0 ? random.next(2_400...6_000) : random.next(24...2_400)
+            parts += [.room(gap), .square(length, Float(((pow(10, rise / 10) - 1) * Double(noise * noise) / 3).squareRoot()))]
+            total += gap + length
+        }
+        return Step.signal(parts, noise: noise, seed: UInt64(seed))
+    }
+
+    /// Bit patterns, so NaN outputs compare equal to the same NaN.
+    static func bits(_ samples: [Float]) -> [UInt32] { samples.map(\.bitPattern) }
+
+    /// White-box: the envelope's private buffer sizes, read by reflection (fails if they are renamed).
+    static func state(of envelope: PassageEnvelope) throws -> (scan: Int, pending: Int) {
+        let children = Dictionary(Mirror(reflecting: envelope).children.compactMap { child in child.label.map { ($0, child.value) } }) { first, _ in first }
+        let scan = try #require(children["scan"] as? [Float], "PassageEnvelope.scan not found")
+        let pending = try #require(children["pending"] as? [Float], "PassageEnvelope.pending not found")
+        return (scan.count, pending.count)
     }
 
     static func level(_ samples: [Float]) -> Double {

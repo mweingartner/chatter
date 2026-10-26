@@ -1,3 +1,8 @@
+# Chatter 3.3.1 — recorded voices finish what they say
+
+- Recorded voices no longer stop partway through a reply. At Responsive and Balanced quality, the smaller speech model sometimes never ended a sentence: it kept generating near-silence until it hit its limit, and the job failed with "Generation reached its frame budget", leaving the rest unspoken. JARVIS failed this way on about half of its replies. The usual cause was a recording that ends in a long silence: a voice continues from the end of its recording, so every sentence started inside that silence. Chatter now trims each recording's edges again when it prepares the voice, ignoring clicks and short noise that kept the silence in place. A sentence that still runs on is noticed after 10 seconds instead of 20 and generated again, up to three times, before the job fails. At Responsive quality, where the sentence has already played, Chatter keeps what was said and goes on to the next sentence instead of repeating it.
+- At Responsive quality, the sound decoder no longer counts part of its output twice where its 0.8-second chunks join.
+
 # Chatter 3.3.0 — accented voices
 
 - Designing a voice with an accent or dialect now leads to a voice that has it. Qwen voice design can't produce accents, so when a description asks for one (for example "a slight Indian accent", "Scottish dialect" or "Indian English"), Chatter offers two ways to start a recorded voice from a speaker who has it:

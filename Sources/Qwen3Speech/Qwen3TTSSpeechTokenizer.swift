@@ -571,7 +571,11 @@ final class DecoderBlockUpsample: Module {
 
         if trimRight > 0 {
             let split = max(0, h.dim(2) - trimRight)
-            overflow = h[0..., 0..., split...]
+            // The transposed conv adds its bias at every output position, and the next chunk's first
+            // positions carry it already, so the held overlap keeps only the kernel's contributions.
+            // With the bias in both halves, every streamed chunk boundary carried it twice.
+            let held = h[0..., 0..., split...]
+            overflow = conv.bias.map { held - $0.reshaped(1, -1, 1) } ?? held
             h = h[0..., 0..., ..<split]
         } else {
             overflow = nil

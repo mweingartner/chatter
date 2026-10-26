@@ -83,6 +83,35 @@ public enum ReferencePreparation {
         return max(0, first * frame - margin)..<min(audio.count, (last + 1) * frame + margin)
     }
 
+    /// A take as Qwen is conditioned on it: edge silence trimmed like `speechBounds` (10 ms frames
+    /// louder than max(0.004, 6 % of the take's RMS), 100 ms kept beyond each end), except that a burst
+    /// shorter than 60 ms, such as a click or a blip of noise, is not speech. A cloned voice continues
+    /// its reference from the last frame, so a take that ends in a long silence after its last word
+    /// starts every passage inside that silence, and the 0.6B model then often loops in silence instead
+    /// of ending (measured 2026-10-25: a 1.7 s tail behind two faint blips made about one passage in five
+    /// run on). Applied when conditioning, so existing references need no re-import.
+    public static func trimmedForConditioning(_ audio: [Float], sampleRate: Int) -> [Float] {
+        Array(audio[conditioningBounds(audio, sampleRate: sampleRate)])
+    }
+
+    /// The sample range kept by `trimmedForConditioning` (the whole take when no burst is long enough).
+    static func conditioningBounds(_ audio: [Float], sampleRate: Int) -> Range<Int> {
+        precondition(sampleRate > 0)
+        let frame = max(1, sampleRate / 100), margin = sampleRate / 10, shortest = 6
+        let threshold = max(0.004, SignalLevel(audio).rms * 0.06)
+        let active = SignalLevel.blockRMS(audio, block: frame).map { $0 > threshold }
+        var runs: [Range<Int>] = []
+        var start: Int?
+        for (index, loud) in active.enumerated() {
+            if loud, start == nil { start = index }
+            if !loud, let begin = start { runs.append(begin..<index); start = nil }
+        }
+        if let begin = start { runs.append(begin..<active.count) }
+        let speech = runs.filter { $0.count >= shortest }
+        guard let first = speech.first, let last = speech.last else { return audio.indices }
+        return max(0, first.lowerBound * frame - margin)..<min(audio.count, last.upperBound * frame + margin)
+    }
+
     /// Conservative peak normalization (no gate or denoise): gain min(4, 0.89 / peak), applied in
     /// float32 like numpy's `float32_array * python_float`.
     static func normalizedPeak(_ audio: [Float]) -> [Float] {

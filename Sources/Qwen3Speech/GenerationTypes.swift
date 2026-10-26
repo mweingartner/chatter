@@ -71,9 +71,14 @@ public enum AudioGenerationError: Error, LocalizedError {
     case invalidInput(String)
     case audioDecodingFailed(String)
     case audioEncodingFailed(String)
+    /// The talker used its whole frame budget without emitting end-of-speech: it ran on, usually
+    /// looping in silence, instead of finishing the passage.
+    case frameBudgetReached
 
     public var errorDescription: String? {
         switch self {
+        case .frameBudgetReached:
+            return "Generation reached its frame budget without finishing the sentence. Try shorter passages."
         case .modelNotInitialized(let message):
             return "Model not initialized: \(message)"
         case .generationFailed(let message):

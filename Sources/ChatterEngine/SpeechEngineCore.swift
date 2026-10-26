@@ -103,7 +103,7 @@ public final class SpeechEngineCore: @unchecked Sendable {
         var samples:[Float]=[]
         for url in urls {
             if !samples.isEmpty { samples += [Float](repeating:0,count:2400) }
-            samples += try AudioIO.readMono(url,sampleRate:24000)
+            samples += ReferencePreparation.trimmedForConditioning(try AudioIO.readMono(url,sampleRate:24000),sampleRate:24000)
             guard samples.count<=Int(QwenCapabilities.maximumReferenceSeconds*24000) else { throw EngineFailure.invalid("This voice set exceeds 180 seconds. Disable some takes; no recordings were silently omitted.") }
         }
         guard samples.count>=2400 else { throw EngineFailure.invalid("Use at least 0.1 seconds of reference speech.") }
@@ -121,7 +121,7 @@ public final class SpeechEngineCore: @unchecked Sendable {
             let prepared=try conditioning(command.references,profile:profile,language:language)
             let loaded=try model(profile)
             do { _ = try loaded.generateVoiceDesign(text:"Ready.",instruct:nil,language:language,conditioning:prepared,refAudio:nil,refText:nil,temperature:0.7,topK:50,topP:0.8,repetitionPenalty:1.05,minP:0,maxTokens:2,onToken:{ _ in self.noteActivity() },isCancelled:{ self.isCancelled(command.id) }) }
-            catch AudioGenerationError.modelNotInitialized(let message) where message.contains("frame budget") {
+            catch AudioGenerationError.frameBudgetReached {
                 // Warm-up intentionally stops after two frames; user synthesis still requires EOS.
             }
         }

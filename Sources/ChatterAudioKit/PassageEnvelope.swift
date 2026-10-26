@@ -16,8 +16,9 @@ import Foundation
 public struct PassageEnvelope {
     private enum Opening {
         case undecided
-        /// Only the short raised-cosine edges.
-        case plain
+        /// Only the short raised-cosine edges. `speech`: the passage opened loud, rather than showing
+        /// no speech within the look-ahead; `floors` are then that opening's room-tone levels.
+        case plain(speech: Bool, floors: (broadband: Double, emphasized: Double)?)
         /// Silence before `fadeStart`, a raised-cosine fade-in over `fadeLength` samples, then unity.
         /// `floors` are the opening room-tone levels in dB (broadband, pre-emphasized).
         case roomTone(fadeStart: Int, fadeLength: Int, floors: (broadband: Double, emphasized: Double))
@@ -29,6 +30,13 @@ public struct PassageEnvelope {
     static let speechRise = 6.0
     /// The opening is decided once a frame rises this far above the room tone (dB).
     static let speechConfirm = 15.0
+    /// `heardSpeech` needs this many consecutive frames that far above the room tone: a rise held for
+    /// 55 to 95 ms, depending on where it falls on the 5 ms frame grid. A burst that touches at most 15
+    /// frames, such as a click or a blip in a silence loop, is never heard; a spoken vowel is longer.
+    static let heardFrames = 16
+    /// Each of those frames must also be at least this loud (dBFS), so a passage that opens with
+    /// digital silence does not hear faint hiss as speech. Chatter's speech sits 10 to 40 dB above it.
+    static let heardLevel = -50.0
 
     private let edgeFrames, hop, window, preRoll, postRoll, lookAhead, tailFrames: Int
     /// 80 ms of quieter frames are bridged, so a stop closure ("st…", "sp…") stays with its word.
@@ -36,6 +44,12 @@ public struct PassageEnvelope {
     private var opening = Opening.undecided
     private var pending: [Float] = []
     private var emittedFrames = 0
+    /// Once the opening is decided, the whole passage, from its first sample and on the opening's hop
+    /// grid, is measured against the opening room tone for `heardSpeech`, so it notices words after the
+    /// look-ahead too. Only the flag depends on it; the audio is shaped as before.
+    private var heard = false
+    private var run = 0
+    private var scan: [Float] = [], scanPrevious: Float = 0
 
     public init(sampleRate: Int = 24_000) {
         precondition(sampleRate > 0)
@@ -54,6 +68,9 @@ public struct PassageEnvelope {
         if case .undecided = opening {
             guard let decided = decideOpening(final: false) else { return [] }
             opening = decided
+            startSpeechScan()
+        } else {
+            scanForSpeech(samples[...])
         }
         let count = max(0, pending.count - heldFrames)
         guard count > 0 else { return [] }
@@ -65,7 +82,7 @@ public struct PassageEnvelope {
     }
 
     public mutating func finish() -> [Float] {
-        if case .undecided = opening { opening = decideOpening(final: true) ?? .plain }
+        if case .undecided = opening { opening = decideOpening(final: true) ?? .plain(speech: false, floors: nil); startSpeechScan() }
         var output = pending
         pending.removeAll(keepingCapacity: true)
         applyOpening(&output, from: emittedFrames)
@@ -73,6 +90,20 @@ public struct PassageEnvelope {
         for i in output.indices { output[i] *= gain(output.count - 1 - i, length: edgeFrames) }
         emittedFrames += output.count
         return output
+    }
+
+    /// Whether the passage has shown sustained speech yet: `heardFrames` consecutive frames 15 dB
+    /// above its opening room tone and at least `heardLevel` (broadband or pre-emphasized), anywhere
+    /// in it, or a loud opening.
+    /// False while the opening is undecided, and for room tone with only clicks or blips. A loud
+    /// opening counts as speech even if it is only loud room tone. Levels come from running sums, so a
+    /// frame within rounding of the threshold may fall either side depending on how audio arrives.
+    public var heardSpeech: Bool {
+        switch opening {
+        case .undecided: false
+        case .plain(true, _): true
+        case .plain(false, _), .roomTone: heard
+        }
     }
 
     private var heldFrames: Int {
@@ -88,14 +119,14 @@ public struct PassageEnvelope {
         let prefix = pending.prefix(lookAhead)
         let broadband = Self.levels(prefix, hop: hop, window: window)
         let emphasized = Self.levels(Self.preEmphasized(prefix), hop: hop, window: window)
-        guard broadband.count >= 4 else { return final ? .plain : nil }
+        guard broadband.count >= 4 else { return final ? .plain(speech: false, floors: nil) : nil }
         let floors = (broadband: Self.median(broadband.prefix(4)), emphasized: Self.median(emphasized.prefix(4)))
-        if floors.broadband > Self.loudOpening { return .plain }
+        if floors.broadband > Self.loudOpening { return .plain(speech: true, floors: floors) }
         func rises(_ i: Int, by threshold: Double) -> Bool {
             broadband[i] >= floors.broadband + threshold || emphasized[i] >= floors.emphasized + threshold
         }
         guard let confirmed = broadband.indices.first(where: { rises($0, by: Self.speechConfirm) }) else {
-            return final || pending.count >= lookAhead ? .plain : nil
+            return final || pending.count >= lookAhead ? .plain(speech: false, floors: floors) : nil
         }
         var onsetHop = confirmed, gap = 0
         for i in stride(from: confirmed, through: 0, by: -1) {
@@ -106,6 +137,39 @@ public struct PassageEnvelope {
         }
         let onset = onsetHop * hop, fadeStart = max(0, onset - preRoll)
         return .roomTone(fadeStart: fadeStart, fadeLength: max(edgeFrames, onset - fadeStart), floors: floors)
+    }
+
+    /// Once the opening is decided, nothing has been emitted yet, so `pending` is the whole passage.
+    private mutating func startSpeechScan() { scanForSpeech(pending[...]) }
+
+    /// The opening room tone the speech scan measures against; nil when there is nothing to scan.
+    private var scanFloors: (broadband: Double, emphasized: Double)? {
+        switch opening {
+        case .roomTone(_, _, let floors): floors
+        case .plain(false, let floors): floors
+        case .undecided, .plain(true, _): nil
+        }
+    }
+
+    private mutating func scanForSpeech(_ samples: ArraySlice<Float>) {
+        guard let floors = scanFloors, !heard, !samples.isEmpty else { return }
+        scan.append(contentsOf: samples)
+        // Measured a look-ahead at a time, so a long append stops measuring once speech is heard.
+        var start = 0
+        while !heard, scan.count - start >= window {
+            let block = scan[start..<min(scan.count, start + lookAhead)]
+            let broadband = Self.levels(block, hop: hop, window: window)
+            let emphasized = Self.levels(Self.preEmphasized(block, previous: start > 0 ? scan[start - 1] : scanPrevious), hop: hop, window: window)
+            let bars = (broadband: max(floors.broadband + Self.speechConfirm, Self.heardLevel), emphasized: max(floors.emphasized + Self.speechConfirm, Self.heardLevel))
+            for i in broadband.indices {
+                run = broadband[i] >= bars.broadband || emphasized[i] >= bars.emphasized ? run + 1 : 0
+                if run >= Self.heardFrames { heard = true; break }
+            }
+            start += broadband.count * hop
+        }
+        if heard { scan = []; return }
+        // Keep what the next frames still need, at the same hop alignment.
+        if start > 0 { scanPrevious = scan[start - 1]; scan.removeFirst(start) }
     }
 
     private func applyOpening(_ samples: inout [Float], from start: Int) {
@@ -157,8 +221,8 @@ public struct PassageEnvelope {
     }
 
     /// y[n] = x[n] − 0.95·x[n−1]: lifts fricatives above low-frequency room tone.
-    static func preEmphasized(_ samples: ArraySlice<Float>) -> ArraySlice<Float> {
-        var output = Array(samples), previous: Float = 0
+    static func preEmphasized(_ samples: ArraySlice<Float>, previous initial: Float = 0) -> ArraySlice<Float> {
+        var output = Array(samples), previous = initial
         for i in output.indices {
             let current = output[i]
             output[i] = current - 0.95 * previous

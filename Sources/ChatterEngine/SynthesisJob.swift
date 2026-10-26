@@ -65,11 +65,28 @@ struct SynthesisJob {
                 let output = envelope.append(try Self.validated(samples))
                 if !output.isEmpty { try deliver(output) }
             }
-            let audio=try model.generateVoiceDesign(text:passage.text,instruct:prompt,language:language,conditioning:conditioning,refAudio:nil,refText:nil,temperature:Float(c.temperature ?? generation.temperature),topK:generation.topK,topP:Float(generation.topP),repetitionPenalty:1.05,minP:0,maxTokens:2048,streamingInterval:0.8,onToken:{ _ in frames+=1;engine.noteActivity() },onAudioChunk:responsive ? { try deliverPassage($0.asArray(Float.self)) } : nil,isCancelled:{ engine.isCancelled(c.id) || ContinuousClock.now >= deadline },wholeTextFirst:generation.wholeTextFirst)
+            let audio=try PassageAttempts.run(passage:index+1,of:passages.count,retrying:{
+                engine.send(c.id,"progress",["message":"Passage \(index+1) of \(passages.count) did not finish; generating it again…"])
+            }) { () throws -> MLXArray? in
+                // A streamed attempt that runs on without words is ended with its held edge faded out
+                // before the passage starts again. (A fresh envelope holds nothing.)
+                let held = envelope.finish()
+                if responsive, !held.isEmpty { try deliver(held) }
+                envelope = PassageEnvelope()
+                do {
+                    return try model.generateVoiceDesign(text:passage.text,instruct:prompt,language:language,conditioning:conditioning,refAudio:nil,refText:nil,temperature:Float(c.temperature ?? generation.temperature),topK:generation.topK,topP:Float(generation.topP),repetitionPenalty:1.05,minP:0,maxTokens:2048,streamingInterval:0.8,onToken:{ _ in frames+=1;engine.noteActivity() },onAudioChunk:responsive ? { try deliverPassage($0.asArray(Float.self)) } : nil,isCancelled:{ engine.isCancelled(c.id) || ContinuousClock.now >= deadline },wholeTextFirst:generation.wholeTextFirst)
+                } catch AudioGenerationError.frameBudgetReached where responsive && envelope.heardSpeech {
+                    // Streamed speech has already played, so generating the passage again would say it
+                    // twice. A run-on loops in silence after the words, so keep them and move on.
+                    engine.send(c.id,"progress",["message":"Passage \(index+1) of \(passages.count) ran on after its words; continuing."])
+                    return nil
+                }
+            }
             if responsive {
                 let tail = envelope.finish()
                 if !tail.isEmpty { try deliver(tail) }
             } else {
+                guard let audio else { throw EngineFailure.failed("Model produced invalid audio.") }
                 let body = envelope.append(try Self.validated(audio.asArray(Float.self)))
                 try deliver(body + envelope.finish())
             }

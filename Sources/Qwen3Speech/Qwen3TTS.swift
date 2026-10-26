@@ -354,9 +354,11 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             refCodes = nil
         }
 
-        // Cap max tokens based on text length
+        // Cap max tokens based on text length: twice upstream's max(75, tokens × 6) per token, with a
+        // 128-frame (10 s) floor. Measured short passages need a tenth of it; a passage that reaches
+        // it is looping in silence, and the engine generates it again.
         let targetTokenCount = tokenizer.encode(text: text).count
-        let effectiveMaxTokens = min(maxTokens, max(256, targetTokenCount * 12))
+        let effectiveMaxTokens = min(maxTokens, max(128, targetTokenCount * 12))
 
         // Initialize cache and timing
         let startTime = Date()
@@ -494,7 +496,7 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         try Task.checkCancellation()
         if isCancelled() { throw CancellationError() }
 
-        guard ended else { throw AudioGenerationError.modelNotInitialized("Generation reached its frame budget without finishing the sentence. Try shorter passages.") }
+        guard ended else { throw AudioGenerationError.frameBudgetReached }
         guard !generatedCodes.isEmpty else { throw AudioGenerationError.modelNotInitialized("Qwen produced no audio.") }
 
         // Emit generation info

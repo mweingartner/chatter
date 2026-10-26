@@ -570,7 +570,8 @@ extension QwenMLXTests {
 
         /// Metamorphic: however the codes are cut (one frame at a time, uneven sizes, one chunk), the
         /// joined stream is the whole-utterance decode, and every chunk has exactly its frames' samples.
-        /// The decoder blocks' transposed-conv biases are zero here; see the known issue below for why.
+        /// The decoder blocks' transposed-conv biases are zero here, so this checks everything but the
+        /// overlap's bias, which the test below covers.
         @Test func anyChunkingJoinsToTheWholeDecode() throws {
             let decoder = try Self.decoder { $0.hasSuffix("block.1.conv.bias") }
             for (sizes, worst) in Self.worstJoinErrors(decoder, seed: 0xC4A1) {
@@ -580,18 +581,16 @@ extension QwenMLXTests {
             }
         }
 
-        /// Pre-existing defect, not from dbe5eaac: `DecoderBlockUpsample.step` overlap-adds the previous
-        /// chunk's overflow, and both halves carry the transposed conv's bias, so the first `rate`
-        /// samples of every later chunk get the bias twice. Recorded as a known issue so the suite stays
-        /// green; it starts failing ("known issue was not recorded") once the step adds the bias once.
+        /// `DecoderBlockUpsample.step` overlap-adds the previous chunk's overflow into the next chunk's
+        /// first `rate` samples. Both halves come from the transposed conv, which adds its bias at every
+        /// position, so the held overflow must drop it: with real biases, every cut still joins to the
+        /// whole decode. Counting the bias twice put it into every streamed chunk boundary (fixed in 3.3.1).
         @Test func streamedChunkBoundariesCountTheUpsampleBiasOnce() throws {
             let decoder = try Self.decoder()
             let errors = Self.worstJoinErrors(decoder, seed: 0xC4A1)
             #expect(errors.first { $0.sizes == [23] }.map { $0.worst <= 1e-2 } == true, "a single chunk has no boundary")
             let off = errors.filter { $0.sizes != [23] && !($0.worst <= 1e-2) }.map { "\($0.sizes): \($0.worst)" }
-            withKnownIssue("DecoderBlockUpsample.step counts its ConvTransposed1d bias twice in each chunk overlap") {
-                #expect(off.isEmpty, "worst difference by cut: \(off.joined(separator: ", "))")
-            }
+            #expect(off.isEmpty, "worst difference by cut: \(off.joined(separator: ", "))")
         }
 
         /// A reset in the middle of a stream, or after an uneven final chunk, forgets everything: the next
