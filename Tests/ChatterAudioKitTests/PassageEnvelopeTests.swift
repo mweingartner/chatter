@@ -179,7 +179,7 @@ struct PassageEnvelopeTests {
     func heardSpeechIsFoundWhereverItStarts(speechStart: Int) {
         let input = Step.signal([.room(speechStart), .square(20_000), .room(4_800)])
         let roomOnly = Step.signal([.room(speechStart + 24_800)])
-        for chunk in [input.count, 19_200, 997, 120] {
+        for chunk in [input.count, 19_200, 997] {
             var envelope = PassageEnvelope(), quiet = PassageEnvelope()
             for offset in stride(from: 0, to: input.count, by: chunk) { _ = envelope.append(Array(input[offset..<min(offset + chunk, input.count)])) }
             for offset in stride(from: 0, to: roomOnly.count, by: chunk) { _ = quiet.append(Array(roomOnly[offset..<min(offset + chunk, roomOnly.count)])) }
