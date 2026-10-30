@@ -72,15 +72,15 @@ final class SpeechEngine {
         let logURL = ChatterPaths.root.appending(path: "Logs/engine.log")
         do {
             try rotateLogIfNeeded(logURL)
-            if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
-            let log = try FileHandle(forWritingTo: logURL); try log.seekToEnd()
+            // The engine's stderr goes wherever this opens, so a link left in Logs must not be followed.
+            let log = try PrivateStorage.appendHandle(logURL)
             let cache = ChatterPaths.root.appending(path: "EngineCache")
             try PrivateStorage.directory(cache)
             let temporary = cache.appending(path: "Temporary")
             try PrivateStorage.directory(temporary)
             guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { throw ChatterError.unavailable("The macOS engine isolation service is unavailable.") }
             p.executableURL = URL(filePath: "/usr/bin/sandbox-exec")
-            p.arguments = ["-p", EngineSandbox.profile(root: ChatterPaths.root, bundle: Bundle.main.bundleURL), executable.path]
+            p.arguments = ["-p", EngineSandbox.profile(root: ChatterPaths.root, bundle: Bundle.main.bundleURL, executable: executable), executable.path]
             var env = ProcessInfo.processInfo.environment.filter { ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"].contains($0.key) }
             env["CHATTER_DATA_ROOT"] = ChatterPaths.root.path
             env["TMPDIR"] = temporary.path + "/"
@@ -250,6 +250,6 @@ final class SpeechEngine {
 
     func refreshLog() {
         let url = ChatterPaths.root.appending(path: "Logs/engine.log")
-        logTail = (try? String(contentsOf: url, encoding: .utf8)).map { String($0.suffix(12_000)) } ?? "No engine log yet."
+        logTail = (try? PrivateStorage.tail(url, limit: 48_000)).map { String(String(decoding: $0, as: UTF8.self).suffix(12_000)) } ?? "No engine log yet."
     }
 }
