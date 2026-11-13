@@ -117,4 +117,30 @@ import Testing
         try FileManager.default.setAttributes([.modificationDate: modification], ofItemAtPath: url.path)
         await #expect(throws: (any Error).self) { try await installer.verifyInstalled() }
     }
+    /// The engine's stderr goes wherever the parent opens its log, so a symlink, extra hard link or FIFO
+    /// left in place of the log is replaced, never written or read through, and the file it names is untouched.
+    @Test func logsAreNeverOpenedThroughALinkOrAnotherName() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appending(path: "zshrc"), log = root.appending(path: "engine.log")
+        try PrivateStorage.write(Data("original\n".utf8), to: target)
+        func append(_ text: String) throws {
+            let handle = try PrivateStorage.appendHandle(log)
+            try handle.write(contentsOf: Data(text.utf8)); try handle.close()
+        }
+        let plants: [(String, () -> Int32)] = [("symlink", { symlink(target.path, log.path) }), ("hard link", { link(target.path, log.path) }), ("FIFO", { mkfifo(log.path, 0o600) })]
+        for (kind, plant) in plants {
+            try? FileManager.default.removeItem(at: log)
+            #expect(plant() == 0, "\(kind)")
+            if kind == "symlink" { #expect(throws: (any Error).self) { try PrivateStorage.tail(log, limit: 100) } }
+            try append("\(kind)\n")
+            let info = try FileManager.default.attributesOfItem(atPath: log.path)
+            #expect(info[.type] as? FileAttributeType == .typeRegular && info[.referenceCount] as? Int == 1, "\(kind)")
+            #expect(try PrivateStorage.tail(log, limit: 100) == Data("\(kind)\n".utf8), "\(kind)")
+            #expect(try Data(contentsOf: target) == Data("original\n".utf8), "\(kind)")
+        }
+        try append("next\n")
+        #expect(try PrivateStorage.tail(log, limit: 100) == Data("FIFO\nnext\n".utf8))
+        #expect(try PrivateStorage.tail(log, limit: 5) == Data("next\n".utf8))
+        #expect((try FileManager.default.attributesOfItem(atPath: log.path)[.posixPermissions] as? Int) == 0o600)
+    }
 }
