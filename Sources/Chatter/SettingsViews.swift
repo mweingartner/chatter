@@ -64,8 +64,8 @@ struct EngineView: View {
                 Surface {
                     HStack { Image(systemName: "cpu").font(.largeTitle).foregroundStyle(.teal); VStack(alignment: .leading, spacing: 6) { Text(model.engine.state.capitalized).font(.title2.bold()); Text(model.engine.detail).foregroundStyle(.secondary) }; Spacer(); if !model.engine.ready { ProgressView().controlSize(.small) } }
                     Divider()
-                    LabeledContent("Recorded voices: Studio", value: "1.7B Base • BF16 full precision • " + (model.engine.loadedProfiles.contains("quality") ? "loaded" : "loads on demand"))
-                    LabeledContent("Recorded voices: Responsive & Balanced", value: "0.6B Base • 8-bit weights" + (model.engine.loadedProfiles.contains("fast") ? " • loaded" : ""))
+                    LabeledContent("Recorded voices: Studio & saved audio", value: "1.7B Base • BF16 full precision • " + (model.engine.loadedProfiles.contains("quality") ? "loaded" : "loads on demand"))
+                    LabeledContent("Recorded voices: Responsive & Balanced", value: model.studioClones ? "1.7B Base • BF16 full precision" : "0.6B Base • 8-bit weights" + (model.engine.loadedProfiles.contains("fast") ? " • loaded" : ""))
                     Text(SpeechQuality.sharedNotice).font(.caption).foregroundStyle(.secondary)
                     LabeledContent("Acceleration", value: "MLX for Swift / Metal")
                     LabeledContent("Memory in use", value: model.engine.footprintBytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory) } ?? "—")
@@ -83,6 +83,12 @@ struct EngineView: View {
                     Text("Chatter prepares clean recordings, verifies their signal quality, saves exact transcripts, and caches their voice representations. All included recordings condition the same voice together. Read the guided styles or import audio in batches, review each transcript, and compare the complete set with individual takes.")
                     Text("Recorded voices use reference conditioning. Export reviewed recordings and exact transcripts from Your voices for the official Qwen fine-tuning workflow. Weight training requires a separate compatible CUDA environment; it does not run inside this Mac app.").font(.callout).foregroundStyle(.secondary)
                     Link("Read Qwen’s fine-tuning guide", destination: URL(string: "https://github.com/QwenLM/Qwen3-TTS/tree/main/finetuning")!)
+                }
+                Surface {
+                    Picker("Model for recorded voices", selection: $model.settings.recordedVoiceModel) { ForEach(RecordedVoiceModel.allCases) { Text($0.title).tag($0.rawValue) } }
+                        .onChange(of: model.settings.recordedVoiceModel) { _, _ in model.saveSettings() }
+                    Text("The model that speaks for recorded voices at Responsive and Balanced quality. Studio (1.7B) is the model saved audio uses, so a reply sounds the same live as saved; it needs about 5 GB of memory and a fast GPU. Fast (0.6B) starts a little sooner and suits a Mac with less memory. Automatic uses Studio on a Mac with 96 GB of memory or more. Studio quality and saved audio always use Studio.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Surface {
                     Toggle("Keep the studio model loaded", isOn: $model.settings.keepStudioLoaded)

@@ -4,6 +4,9 @@ import Cmlx
 @preconcurrency import MLX
 import MLXNN
 @testable import Qwen3Speech
+import struct Qwen3CodecSupport.TransformerConfig
+import class Qwen3CodecSupport.Attention
+import func Qwen3CodecSupport.windowedCausalMask
 
 /// Opt-in MLX tests: they need Apple-silicon Metal, which CI runners lack, so they run only with
 /// `CHATTER_TEST_MLX=1`. MLX finds its metallib through the loaded bundles; this test bundle's
@@ -634,6 +637,185 @@ extension QwenMLXTests {
                     #expect(worst <= 1e-2, "row \(b), chunk \(index): worst difference \(worst)")
                 }
             }
+        }
+    }
+
+    /// The speech decoder attends to a window of frames (`sliding_window`), as the reference does in
+    /// every layer; a cloned voice's decoder continues from its reference recording.
+    @Suite(.serialized)
+    struct QwenDecoderWindowTests {
+        init() { MLXTests.prepare() }
+
+        static func whole(_ decoder: Qwen3TTSSpeechTokenizerDecoder, _ codes: MLXArray) -> [Float] {
+            decoder(codes.transposed(0, 2, 1)).asArray(Float.self)
+        }
+
+        /// The test decoder's window is 8 frames. Up to there the window changes nothing; past it,
+        /// attending to everything gives different audio, which is what upstream produced.
+        @Test func theWindowLimitsWhatLaterFramesSee() throws {
+            let decoder = try QwenStreamingStepTests.decoder()
+            #expect(decoder.preTransformer.attentionWindow == 8)
+            let codes = QwenStreamingStepTests.codes(time: 30, seed: 0x51DE)
+            let windowed = Self.whole(decoder, codes)
+            decoder.preTransformer.attentionWindow = nil
+            let unbounded = Self.whole(decoder, codes)
+            decoder.preTransformer.attentionWindow = 8
+            let samples = 8 * decoder.totalUpsample
+            let early = zip(windowed.prefix(samples), unbounded.prefix(samples)).map { abs($0 - $1) }.max() ?? .infinity
+            let late = zip(windowed.dropFirst(samples), unbounded.dropFirst(samples)).map { abs($0 - $1) }.max() ?? 0
+            #expect(early <= 1e-2, "the first window of frames sees the same frames either way: \(early)")
+            #expect(late > 1e-2, "past the window the outputs must differ: \(late)")
+        }
+
+        /// A frame's audio depends only on the frames inside its window and the convolutions' reach:
+        /// changing a frame far in the past leaves the present untouched.
+        @Test func framesBeyondTheWindowDoNotReachThePresent() throws {
+            let decoder = try QwenStreamingStepTests.decoder()
+            let time = 40
+            let codes = QwenStreamingStepTests.codes(time: time, seed: 0xFA57)
+            var values = codes.asArray(Int32.self)
+            for quantizer in 0 ..< 4 { values[quantizer] = (values[quantizer] + 7) % 32 }   // frame 0 only
+            let changed = MLXArray(values).reshaped(1, time, 4)
+            let a = Self.whole(decoder, codes), b = Self.whole(decoder, changed)
+            let tail = 4 * decoder.totalUpsample
+            #expect(zip(a.prefix(decoder.totalUpsample), b.prefix(decoder.totalUpsample)).contains { $0 != $1 }, "the changed frame itself must differ")
+            let worst = zip(a.suffix(tail), b.suffix(tail)).map { abs($0 - $1) }.max() ?? .infinity
+            #expect(worst <= 1e-3, "the last frames must not see frame 0: \(worst)")
+        }
+
+        /// The streamed cache keeps only what the window still needs, however long the stream.
+        @Test func theStreamingCacheStaysWithinTheWindow() throws {
+            let decoder = try QwenStreamingStepTests.decoder()
+            decoder.resetStreamingState()
+            defer { decoder.resetStreamingState() }
+            for piece in QwenStreamingStepTests.chunks(QwenStreamingStepTests.codes(time: 50, seed: 0xCAC4E), every: 5) {
+                _ = decoder.streamingStep(piece)
+                #expect(decoder.transformerCache?.allSatisfy { $0.count <= 7 } == true)
+            }
+            #expect(decoder.transformerCache?.first?.offset == 50)
+        }
+
+        /// A captured state can be restored any number of times: decoding a passage from it gives the
+        /// audio that decoding recording and passage together gives after the recording.
+        @Test func aCapturedStateContinuesTheDecode() throws {
+            let decoder = try QwenStreamingStepTests.decoder()
+            let all = QwenStreamingStepTests.codes(time: 36, seed: 0x9E1F)
+            let reference = all[0..., 0 ..< 21, 0...], passage = all[0..., 21 ..< 36, 0...]
+            let together = Self.whole(decoder, all)
+            let expected = Array(together.dropFirst(21 * decoder.totalUpsample))
+
+            decoder.resetStreamingState()
+            for piece in QwenStreamingStepTests.chunks(reference, every: 300) { _ = decoder.streamingStep(piece) }
+            let state = decoder.captureStreamingState()
+            decoder.resetStreamingState()
+
+            for sizes in [[15], [10, 5], [4, 4, 4, 3]] {
+                decoder.restoreStreamingState(state)
+                let audio = QwenStreamingStepTests.chunks(passage, sizes: sizes).flatMap { decoder.streamingStep($0).asArray(Float.self) }
+                #expect(audio.count == expected.count)
+                let worst = zip(audio, expected).map { abs($0 - $1) }.max() ?? .infinity
+                #expect(worst <= 1e-2, "chunks \(sizes): \(worst)")
+            }
+            // Decoding from the state does not change it.
+            decoder.restoreStreamingState(state)
+            let first = decoder.streamingStep(QwenStreamingStepTests.chunks(passage, sizes: [15])[0]).asArray(Float.self)
+            decoder.restoreStreamingState(state)
+            let second = decoder.streamingStep(QwenStreamingStepTests.chunks(passage, sizes: [15])[0]).asArray(Float.self)
+            #expect(first == second)
+            decoder.resetStreamingState()
+        }
+    }
+
+    /// The talker's sampler follows the reference: the end of speech is a token like any other.
+    @Suite(.serialized)
+    struct QwenSamplerTests {
+        init() { MLXTests.prepare() }
+        static let end = 9
+
+        /// Ten tokens; `end` is the least likely but one, far outside a top-k of 3.
+        static func logits(end: Float) -> MLXArray {
+            var values: [Float] = [5, 4.5, 4, 1, 0.5, 0, -1, -2, -3, 0]
+            values[Self.end] = end
+            return MLXArray(values).reshaped(1, 1, 10)
+        }
+
+        static func draws(_ count: Int = 300, _ sample: () -> MLXArray) -> [Int32] {
+            MLXRandom.seed(0x5A3E)
+            return (0 ..< count).map { _ in sample().item(Int32.self) }
+        }
+
+        @Test func theEndIsNotDrawnFromOutsideTheTopK() {
+            let reference = Self.draws { Qwen3TTSModel.sampleToken(Self.logits(end: 3), temperature: 1, topP: 1, topK: 3, eosTokenId: Self.end) }
+            #expect(!reference.contains(Int32(Self.end)) && Set(reference).isSubset(of: [0, 1, 2]))
+            // Upstream's exemption put it back, to be drawn however unlikely.
+            let upstream = Self.draws { Qwen3TTSModel.sampleToken(Self.logits(end: 3), temperature: 1, topP: 1, topK: 3, eosTokenId: Self.end, preservesEOS: true) }
+            #expect(upstream.contains(Int32(Self.end)))
+        }
+
+        @Test func aLikelyEndIsDrawn() {
+            let draws = Self.draws { Qwen3TTSModel.sampleToken(Self.logits(end: 9), temperature: 1, topP: 1, topK: 3, eosTokenId: Self.end) }
+            #expect(draws.filter { $0 == Int32(Self.end) }.count > 250)
+        }
+
+        /// The reference's `min_new_tokens`: while it applies, the end cannot be drawn, even greedily.
+        @Test func theEndCannotBeDrawnBeforeTheMinimum() {
+            let sampled = Self.draws { Qwen3TTSModel.sampleToken(Self.logits(end: 9), temperature: 1, topP: 1, topK: 3, eosTokenId: Self.end, allowsEOS: false) }
+            #expect(!sampled.contains(Int32(Self.end)))
+            let greedy = Qwen3TTSModel.sampleToken(Self.logits(end: 9), temperature: 0, eosTokenId: Self.end, allowsEOS: false).item(Int32.self)
+            #expect(greedy == 0)
+        }
+
+        /// With temperature applied first, a low temperature narrows the nucleus as well as the draw.
+        @Test func temperatureComesBeforeTheNucleus() {
+            // Probabilities at temperature 1: about 0.48, 0.29, 0.18, ...; at 0.25 the first is 0.86.
+            let first = Self.draws { Qwen3TTSModel.sampleToken(Self.logits(end: -9), temperature: 0.25, topP: 0.8, topK: 10, temperatureFirst: true) }
+            #expect(Set(first) == [0], "the nucleus of the sharpened distribution is its first token")
+            let after = Self.draws { Qwen3TTSModel.sampleToken(Self.logits(end: -9), temperature: 0.25, topP: 0.8, topK: 10, temperatureFirst: false) }
+            #expect(Set(after).count > 1, "upstream took the nucleus before sharpening")
+        }
+
+        @Test func suppressedTokensAreNeverDrawn() {
+            let draws = Self.draws { Qwen3TTSModel.sampleToken(Self.logits(end: 0), temperature: 1, topP: 1, topK: 10, suppressTokens: [0, 1, 2]) }
+            #expect(Set(draws).isDisjoint(with: [0, 1, 2]))
+        }
+    }
+
+    /// Qwen's tokenizer encoder rotates the two halves of each attention head, as Transformers' Mimi
+    /// does; upstream's interleaved pairs encoded reference recordings to the wrong codes.
+    @Suite(.serialized)
+    struct QwenEncoderPositionTests {
+        init() { MLXTests.prepare() }
+
+        @Test func rotaryPositionsRotateTheTwoHalvesOfAHead() throws {
+            let config = TransformerConfig(dModel: 16, numHeads: 2, numLayers: 1, causal: true, normFirst: true, biasFF: false, biasAttn: false,
+                                           layerScale: 0.01, positionalEmbedding: "rope", useConvBlock: false, crossAttention: false, convKernelSize: 3,
+                                           useConvBias: true, gating: false, norm: "layer_norm", context: 250, maxPeriod: 10_000, maxSeqLen: 8000,
+                                           kvRepeat: 1, dimFeedforward: 32, convLayout: true)
+            let attention = Attention(cfg: config)
+            #expect(attention.matchesReference)
+            let rope = try #require(attention.rope)
+            // One head of eight dimensions holding a single 1 in its first place, at position 1.
+            var values = [Float](repeating: 0, count: 16)
+            values[8] = 1
+            let rotated = rope(MLXArray(values).reshaped(1, 1, 2, 8), offset: 0)[0, 0, 1].asArray(Float.self)
+            // Halves: (x[0], x[4]) turn by one radian. Interleaved pairs would put the sine in x[1].
+            #expect(abs(rotated[0] - Float(cos(1.0))) < 1e-5)
+            #expect(abs(rotated[4] - Float(sin(1.0))) < 1e-5)
+            #expect(abs(rotated[1]) < 1e-6)
+        }
+
+        @Test func aMaskWindowsCausalAttention() {
+            // Three new frames after two held ones, window 3: each row sees itself and two before.
+            let mask = try! #require(windowedCausalMask(count: 3, held: 2, window: 3, dtype: .float32)).asArray(Float.self)
+            let visible = mask.map { $0 == 0 }
+            #expect(visible == [true, true, true, false, false,
+                                false, true, true, true, false,
+                                false, false, true, true, true])
+            // No window: plain causal. One frame that sees everything needs no mask.
+            let causal = try! #require(windowedCausalMask(count: 2, held: 1, window: nil, dtype: .float32)).asArray(Float.self).map { $0 == 0 }
+            #expect(causal == [true, true, false, true, true, true])
+            #expect(windowedCausalMask(count: 1, held: 4, window: 8, dtype: .float32) == nil)
+            #expect(windowedCausalMask(count: 1, held: 9, window: 8, dtype: .float32) != nil)
         }
     }
 }

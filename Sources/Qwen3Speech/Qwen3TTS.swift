@@ -6,6 +6,58 @@ import Foundation
 import MLXNN
 import Tokenizers
 
+// MARK: - Generation options
+
+/// How a passage is sampled and decoded, beyond temperature, top-k and top-p. The defaults are the
+/// reference implementation's behaviour; the alternatives are upstream MLX-Audio's, kept so that
+/// their effect can be measured (`chatter-tools lab`).
+public struct QwenGenerationOptions: Sendable, Equatable {
+    /// Upstream MLX-Audio puts the end-of-speech token back after top-k and top-p removed it, so it
+    /// can be drawn at any frame however unlikely the model finds it. The reference sampler treats
+    /// it like any other token.
+    public var preservesEOS = false
+    /// The reference's `min_new_tokens`: no end of speech before this many frames.
+    public var minimumFrames = 2
+    /// The reference applies temperature before top-k and top-p, so the nucleus is taken from the
+    /// distribution that is sampled; upstream MLX-Audio applied it after.
+    public var temperatureFirst = true
+    /// The reference samples the fifteen residual codebooks with its own settings
+    /// (`subtalker_*`, published as temperature 0.9, top-k 50, top-p 1.0). Nil uses the talker's.
+    public var residualTemperature: Float?
+    public var residualTopK: Int?
+    public var residualTopP: Float?
+    /// The reference's default layout for cloning (`non_streaming_mode=False`): the reference and
+    /// passage text laid over the reference recording's frames, instead of all text before them.
+    /// Measured 2026-11-12, it ran on twice as often as text-first for JARVIS, so Chatter keeps
+    /// text-first, which the reference also supports.
+    public var overlaysText = false
+    /// Decode a cloned voice from the conditioning's primed decoder state: the decoder continues
+    /// from the reference recording, as the reference does by decoding recording and passage
+    /// together, without decoding the recording again for every passage. `false` decodes them
+    /// together (whole passages) or starts the decoder cold (streamed ones), as upstream did.
+    public var usesPrimedDecoder = true
+    /// Streamed chunks after the first hold this many seconds of audio; nil keeps the first chunk's
+    /// length. A shorter interval hands a player its next audio sooner.
+    public var laterChunkSeconds: Double?
+    /// Frames generated after the model first chooses to end, for measurement. The model often ends
+    /// on the frame that still carries the last sound at full level, and the frames it would have
+    /// produced next sometimes hold that sound's decay; as often they hold a short burst of noise
+    /// after silence (heard as a click), so Chatter generates none.
+    public var framesAfterEnd = 0
+    public init() {}
+}
+
+/// One generated frame, for measurements.
+public struct QwenFrameDiagnostics: Sendable {
+    public let step: Int
+    public let token: Int
+    /// The model's probability of ending here (after suppression, repetition penalty and temperature).
+    public let endProbability: Float
+    /// Whether end of speech was still a candidate after top-k and top-p.
+    public let endWasCandidate: Bool
+    public let ended: Bool
+}
+
 // MARK: - Qwen3TTS Model
 
 public final class Qwen3TTSModel: Module, @unchecked Sendable {
@@ -23,6 +75,47 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
 
 
     public var sampleRate: Int { config.sampleRate }
+
+    /// The speech decoder's attention window in frames (see `DecoderTransformer.attentionWindow`).
+    public var decoderAttentionWindow: Int? {
+        get { speechTokenizer?.decoder.preTransformer.attentionWindow }
+        set { speechTokenizer?.decoder.preTransformer.attentionWindow = newValue }
+    }
+    /// Whether reference recordings are encoded as the reference implementation encodes them
+    /// (see `Attention.matchesReference`).
+    public var encoderMatchesReference: Bool {
+        get { speechTokenizer?.encoderModel?.encoderTransformer.transformer.matchesReference ?? true }
+        set { speechTokenizer?.encoderModel?.encoderTransformer.transformer.matchesReference = newValue }
+    }
+    /// Encodes 24 kHz mono samples to codec codes and decodes them again: what the model hears of a
+    /// reference recording.
+    public func roundTrip(_ samples: MLXArray) -> MLXArray {
+        guard let speechTokenizer else { return samples }
+        let codes = speechTokenizer.encode(referenceAudioForEncoder(samples))
+        let audio = concatenated(speechTokenizer.streamingDecode(codes.transposed(0, 2, 1), chunkTokens: 300), axis: -1)[0]
+        eval(audio)
+        return audio
+    }
+    /// Codec codes [quantizer][frame] for 24 kHz mono samples.
+    public func encodeCodes(_ samples: MLXArray) -> [[Int32]] {
+        guard let speechTokenizer else { return [] }
+        let codes = speechTokenizer.encode(referenceAudioForEncoder(samples))
+        return (0 ..< codes.dim(1)).map { codes[0, $0, 0...].asArray(Int32.self) }
+    }
+    /// Audio for codec codes [quantizer][frame], decoded from silence.
+    public func decodeCodes(_ codes: [[Int32]], chunkTokens: Int = 300) -> MLXArray {
+        guard let speechTokenizer, let frames = codes.first?.count else { return MLXArray.zeros([1]) }
+        let array = MLXArray(codes.flatMap { $0 }).reshaped(1, codes.count, frames)
+        let audio = concatenated(speechTokenizer.streamingDecode(array.transposed(0, 2, 1), chunkTokens: chunkTokens), axis: -1)[0]
+        eval(audio)
+        return audio
+    }
+    /// The speaker encoder's embedding of 24 kHz mono samples (Base models only), for comparing voices.
+    public func speakerEmbedding(_ samples: MLXArray) -> [Float]? {
+        extractSpeakerEmbedding(samples).map { $0.asType(.float32).reshaped(-1).asArray(Float.self) }
+    }
+    /// Text tokens in `text` as the frame budget counts them.
+    public func textTokenCount(_ text: String) -> Int { tokenizer?.encode(text: text).count ?? 0 }
 
     public var defaultGenerationParameters: GenerateParameters {
         GenerateParameters(
@@ -208,24 +301,33 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
     ///   - codes: Codec codes [1, time, numCodeGroups]
     ///   - chunkTokens: Tokens per decode chunk (controls decode granularity)
     /// - Returns: Decoded audio waveform (1D)
-    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 300) -> MLXArray {
+    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 300, from state: Qwen3TTSSpeechTokenizerDecoder.StreamingState? = nil) -> MLXArray {
         guard let speechTokenizer else { return MLXArray.zeros([1]) }
 
         var audioChunks = [MLXArray]()
-        for chunk in speechTokenizer.streamingDecode(codes, chunkTokens: chunkTokens) {
+        for chunk in speechTokenizer.streamingDecode(codes, chunkTokens: chunkTokens, from: state) {
             audioChunks.append(chunk)
         }
         var audio = concatenated(audioChunks, axis: -1)[0]
 
-        let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self))
-            * speechTokenizer.decodeUpsampleRate
-        if validLen > 0, validLen < audio.dim(0) {
-            audio = audio[..<validLen]
+        if Self.trimsZeroCodes {
+            // Upstream MLX-Audio counts first-codebook codes above zero as the valid length. Code 0 is
+            // an ordinary codebook entry (the reference counts codes above -1, its padding), so each
+            // one generated or present in the reference cut 80 ms from the end of the passage and
+            // moved the reference cut earlier.
+            let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self))
+                * speechTokenizer.decodeUpsampleRate
+            if validLen > 0, validLen < audio.dim(0) {
+                audio = audio[..<validLen]
+            }
         }
 
         eval(audio)
         return audio
     }
+
+    /// Measurement switch for the upstream valid-length rule described in `decodeChunk`.
+    nonisolated(unsafe) public static var trimsZeroCodes = false
 
     private func referenceAudioForEncoder(_ refAudio: MLXArray) -> MLXArray {
         if refAudio.ndim == 1 {
@@ -297,7 +399,13 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         onInfo: ((AudioGenerationInfo) -> Void)? = nil,
         onAudioChunk: ((MLXArray) throws -> Void)? = nil,
         isCancelled: () -> Bool = { false },
-        wholeTextFirst: Bool = false
+        wholeTextFirst: Bool = false,
+        options: QwenGenerationOptions = QwenGenerationOptions(),
+        onFrame: ((QwenFrameDiagnostics) -> Void)? = nil,
+        onCodes: ((MLXArray) -> Void)? = nil,
+        forcing: [[Int32]]? = nil,
+        onForced: ((_ step: Int, _ logits: MLXArray, _ residual: [Int32]) -> Void)? = nil,
+        shouldEnd: (() -> Bool)? = nil
     ) throws -> MLXArray {
         guard let speechTokenizer, let tokenizer else {
             throw AudioGenerationError.modelNotInitialized(
@@ -316,7 +424,8 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         if let conditioning {
             let prepared = try prepareICLGenerationInputs(
                 text: text,
-                conditioning: conditioning
+                conditioning: conditioning,
+                overlaysText: options.overlaysText
             )
             inputEmbedsInit = prepared.0
             trailingTextHidden = prepared.1
@@ -365,6 +474,8 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         let cache = talker.makeCache()
         var generatedCodes = [MLXArray]()
         var ended = false
+        /// Frames still to generate after the model chose to end; nil until it does.
+        var tailFrames: Int?
         var generatedCodebookTokens = [Int]()
         let eosTokenId = talkerConfig.codecEosTokenId
 
@@ -374,7 +485,7 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
 
         // Streaming decode state
         let codecTokenRateHz = 12.5
-        let streamingChunkSize = max(1, Int(streamingInterval * codecTokenRateHz))
+        var streamingChunkSize = max(1, Int(streamingInterval * codecTokenRateHz))
         var decodedTokens = 0
 
         var trailingIdx = 0
@@ -382,23 +493,26 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         let eosTokenArray = MLXArray([Int32(eosTokenId)]).reshaped(1, 1)
         let codeCache = talker.codePredictor.makeCache()
 
+        let primed = options.usesPrimedDecoder ? conditioning?.decoderState : nil
         if onAudioChunk != nil {
             speechTokenizer.decoder.resetStreamingState()
+            if let primed { speechTokenizer.decoder.restoreStreamingState(primed) }
         }
         defer {
-            if onAudioChunk != nil {
+            if onAudioChunk != nil || primed != nil {
                 speechTokenizer.decoder.resetStreamingState()
             }
         }
 
-        for step in 0 ..< effectiveMaxTokens {
+        for step in 0 ..< (forcing.map { $0.count + 1 } ?? effectiveMaxTokens) {
             try Task.checkCancellation()
         if isCancelled() { throw CancellationError() }
             // Forward pass through talker
             let (logits, hidden) = talker(inputEmbeds, cache: cache)
 
             // Sample first codebook token
-            let nextToken = sampleToken(
+            var endDiagnostics: (probability: MLXArray, candidate: MLXArray)?
+            var nextToken = Self.sampleToken(
                 logits,
                 temperature: temperature,
                 topP: topP,
@@ -407,8 +521,26 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
                 generatedTokens: generatedCodebookTokens,
                 suppressTokens: suppressTokens,
                 eosTokenId: eosTokenId,
-                minP: minP
+                minP: minP,
+                preservesEOS: options.preservesEOS,
+                allowsEOS: step >= options.minimumFrames && tailFrames == nil,
+                temperatureFirst: options.temperatureFirst,
+                diagnostics: onFrame == nil ? nil : { endDiagnostics = ($0, $1) }
             )
+
+            // The model chose to end: generate the frames that follow instead, then end.
+            if options.framesAfterEnd > 0, forcing == nil, tailFrames == nil, nextToken.item(Int32.self) == Int32(eosTokenId) {
+                tailFrames = options.framesAfterEnd
+                nextToken = Self.sampleToken(
+                    logits, temperature: temperature, topP: topP, topK: topK, repetitionPenalty: repetitionPenalty,
+                    generatedTokens: generatedCodebookTokens, suppressTokens: suppressTokens, eosTokenId: eosTokenId, minP: minP,
+                    preservesEOS: false, allowsEOS: false, temperatureFirst: options.temperatureFirst)
+            }
+
+            // Measurement: follow a given code sequence and report what the model would have chosen.
+            let forced: [Int32]? = forcing.map { step < $0.count ? $0[step] : [Int32(eosTokenId)] }
+            if let forced { nextToken = MLXArray([forced[0]]).reshaped(1, 1) }
+            var residualChoices: [MLXArray] = []
 
             // Defer sync to the eval boundary with inputEmbeds.
             let isEOS = nextToken .== eosTokenArray
@@ -433,13 +565,19 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
                     codeInput, cache: codeCache, generationStep: codeIdx
                 )
 
-                let nextCode = sampleToken(
+                let nextCode = Self.sampleToken(
                     codeLogits,
-                    temperature: temperature,
-                    topP: topP,
-                    topK: topK,
-                    minP: minP
+                    temperature: options.residualTemperature ?? temperature,
+                    topP: options.residualTopP ?? topP,
+                    topK: options.residualTopK ?? topK,
+                    minP: minP,
+                    temperatureFirst: options.temperatureFirst
                 )
+                if let forced, forced.count > codeIdx + 1 {
+                    residualChoices.append(nextCode)
+                    codeTokens.append(MLXArray([forced[codeIdx + 1]]).reshaped(1, 1))
+                    continue
+                }
                 codeTokens.append(nextCode)
             }
 
@@ -462,15 +600,27 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
 
             inputEmbeds = textEmbed + codecEmbed
             eval(inputEmbeds, isEOS)
+            if let onForced, forcing != nil {
+                onForced(step, logits[0, -1, 0...].asType(.float32), residualChoices.map { $0.item(Int32.self) })
+            }
 
             let tokenId = Int(nextToken[0, 0].item(Int32.self))
             onToken?(tokenId)
-            if isEOS.item(Bool.self) {
+            let endsHere = isEOS.item(Bool.self)
+            if let onFrame, let endDiagnostics {
+                onFrame(QwenFrameDiagnostics(step: step, token: tokenId, endProbability: endDiagnostics.probability.item(Float.self),
+                                             endWasCandidate: endDiagnostics.candidate.item(Bool.self), ended: endsHere))
+            }
+            if endsHere {
                 ended = true
                 break
             }
             generatedCodebookTokens.append(tokenId)
             generatedCodes.append(allCodes)
+            if let remaining = tailFrames {
+                tailFrames = remaining - 1
+                if remaining <= 1 { ended = true }
+            }
 
             // Streaming: decode and yield audio chunks during generation
             if let onAudioChunk {
@@ -484,6 +634,7 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
                     eval(audioChunk)
 
                     decodedTokens = generatedCodes.count
+                    if let later = options.laterChunkSeconds { streamingChunkSize = max(1, Int(later * codecTokenRateHz)) }
                     try onAudioChunk(audioChunk)
                 }
             }
@@ -491,12 +642,17 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             if step > 0, step % 50 == 0 {
                 Memory.clearCache()
             }
+            // The caller has heard enough (the words are said and only silence follows): end here,
+            // as if the model had.
+            if !ended, !generatedCodes.isEmpty, shouldEnd?() == true { ended = true }
+            if ended { break }
         }
 
         try Task.checkCancellation()
         if isCancelled() { throw CancellationError() }
 
-        guard ended else { throw AudioGenerationError.frameBudgetReached }
+        // The model ended; only the frames after its end ran into the budget.
+        guard ended || tailFrames != nil else { throw AudioGenerationError.frameBudgetReached }
         guard !generatedCodes.isEmpty else { throw AudioGenerationError.modelNotInitialized("Qwen produced no audio.") }
 
         // Emit generation info
@@ -531,6 +687,15 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
 
         // Non-streaming path: full decode (existing behavior)
         let codes = stacked(generatedCodes, axis: 1) // [1, seq_len, num_code_groups]
+        onCodes?(codes)
+
+        if let primed {
+            // The decoder continues from the reference recording, exactly as if it had just decoded
+            // it, so the passage needs no reference prefix decoded again and cut away.
+            let audio = decodeChunk(codes, from: primed)
+            eval(audio)
+            return audio
+        }
 
         var decodeCodes = codes
         if let refCodes {
@@ -608,6 +773,12 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         public let referenceTextTokenIDs: MLXArray
         public let resolvedLanguage: String
         public let codecLanguageID: Int?
+        /// The speech decoder's streaming state after the whole reference recording.
+        var decoderState: Qwen3TTSSpeechTokenizerDecoder.StreamingState?
+        public var referenceFrames: Int { referenceSpeechCodes.dim(2) }
+        public var referenceTextTokens: Int { referenceTextTokenIDs.dim(1) }
+        /// First-codebook codes equal to zero in the reference.
+        public var zeroFirstCodes: Int { Int((referenceSpeechCodes[0, 0, 0...] .== 0).sum().item(Int32.self)) }
 
         public init(
             speakerEmbedding: MLXArray?,
@@ -726,18 +897,26 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             languageId = langMap[resolvedLanguage]
         }
 
-        return Qwen3TTSReferenceConditioning(
+        var conditioning = Qwen3TTSReferenceConditioning(
             speakerEmbedding: speakerEmbedding ?? refContext.speakerEmbedding,
             referenceSpeechCodes: refContext.refCodes,
             referenceTextTokenIDs: refTextIds,
             resolvedLanguage: resolvedLanguage,
             codecLanguageID: languageId
         )
+        // Decode the reference once and keep where the decoder ends up. Every passage then starts
+        // from there, which is what the reference does by decoding reference and passage together.
+        let decoder = speechTokenizer.decoder
+        _ = speechTokenizer.streamingDecode(refContext.refCodes.transposed(0, 2, 1), chunkTokens: 300, keepingState: true)
+        conditioning.decoderState = decoder.captureStreamingState()
+        decoder.resetStreamingState()
+        return conditioning
     }
 
     func prepareICLGenerationInputs(
         text: String,
-        conditioning: Qwen3TTSReferenceConditioning
+        conditioning: Qwen3TTSReferenceConditioning,
+        overlaysText: Bool = false
     ) throws -> (MLXArray, MLXArray, MLXArray, MLXArray) {
         guard let tokenizer, let talkerConfig = config.talkerConfig else {
             throw AudioGenerationError.modelNotInitialized(
@@ -780,8 +959,20 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             to: [1, codecEmbedIcl.dim(1), ttsPadEmbed.dim(-1)]
         )
 
-        let iclInputEmbed = concatenated([textWithCodecPad, codecWithTextPad], axis: 1)
-        let trailingTextHidden = ttsPadEmbed
+        var iclInputEmbed = concatenated([textWithCodecPad, codecWithTextPad], axis: 1)
+        var trailingTextHidden = ttsPadEmbed
+        if overlaysText {
+            // The reference's default for cloning: text and reference frames share positions; text
+            // left over is read one token per generated frame.
+            let codecLen = codecEmbedIcl.dim(1)
+            if textLen > codecLen {
+                iclInputEmbed = textEmbed[0..., 0 ..< codecLen, 0...] + codecEmbedIcl
+                trailingTextHidden = textEmbed[0..., codecLen..., 0...]
+            } else {
+                let pads = broadcast(ttsPadEmbed, to: [1, codecLen - textLen, ttsPadEmbed.dim(-1)])
+                iclInputEmbed = (codecLen > textLen ? concatenated([textEmbed, pads], axis: 1) : textEmbed) + codecEmbedIcl
+            }
+        }
 
         let codecPrefill: [Int32] = if let langId = conditioning.codecLanguageID {
             [
@@ -803,7 +994,9 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             MLXArray([Int32(talkerConfig.codecPadId), Int32(talkerConfig.codecBosId)]).reshaped(1, 2)
         )
         if let speakerEmbedding = conditioning.speakerEmbedding {
-            let speakerEmbed = speakerEmbedding.reshaped(1, 1, -1)
+            // In the talker's own type: a float32 embedding here promotes the whole prompt, and with it
+            // the talker's cache and every later frame, to float32 (upstream a7bd75b9, 2026-10-26).
+            let speakerEmbed = speakerEmbedding.reshaped(1, 1, -1).asType(codecPrefixEmbed.dtype)
             codecPrefixEmbed = concatenated([codecPrefixEmbed, speakerEmbed, codecPrefixSuffix], axis: 1)
         } else {
             codecPrefixEmbed = concatenated([codecPrefixEmbed, codecPrefixSuffix], axis: 1)
@@ -1000,7 +1193,7 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
 
     // MARK: - Token sampling
 
-    func sampleToken(
+    static func sampleToken(
         _ logits: MLXArray,
         temperature: Float = 0.9,
         topP: Float = 1.0,
@@ -1009,9 +1202,15 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
         generatedTokens: [Int]? = nil,
         suppressTokens: [Int]? = nil,
         eosTokenId: Int? = nil,
-        minP: Float = 0.0
+        minP: Float = 0.0,
+        preservesEOS: Bool = false,
+        allowsEOS: Bool = true,
+        temperatureFirst: Bool = true,
+        diagnostics: ((_ endProbability: MLXArray, _ endWasCandidate: MLXArray) -> Void)? = nil
     ) -> MLXArray {
         var logitsSlice = logits[0..., (-1)..., 0...].squeezed(axis: 1) // [batch, vocab_size]
+        // Float32 keeps top-p's cumulative sum exact for a bfloat16 or quantized talker.
+        logitsSlice = logitsSlice.asType(.float32)
 
         // Suppress tokens by setting to -inf
         if let suppress = suppressTokens, !suppress.isEmpty {
@@ -1035,14 +1234,28 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             }
         }
 
+        let eosRange: Range<Int>? = if let eosTokenId, eosTokenId >= 0, eosTokenId < logitsSlice.dim(-1) {
+            eosTokenId ..< (eosTokenId + 1)
+        } else {
+            nil
+        }
+        // The reference's `min_new_tokens`: no end of speech yet.
+        if !allowsEOS, let eosRange {
+            let eosIdx = MLXArray([Int32(eosRange.lowerBound)]).reshaped(1, 1)
+            logitsSlice = putAlong(logitsSlice, eosIdx, values: MLXArray.full([1, 1], values: MLXArray(-Float.infinity), dtype: logitsSlice.dtype), axis: -1)
+        }
+
         // Greedy if temperature 0
         if temperature <= 0 {
             return argMax(logitsSlice, axis: -1, keepDims: true)
         }
+        // The reference scales by temperature before top-k and top-p, so the nucleus is taken from
+        // the distribution that is actually sampled.
+        if temperatureFirst { logitsSlice = logitsSlice / temperature }
 
         // Preserve EOS logit so top-k/top-p/min-p do not permanently suppress it.
-        let eosLogit: MLXArray? = if let eosTokenId, eosTokenId >= 0, eosTokenId < logitsSlice.dim(-1) {
-            logitsSlice[0..., eosTokenId ..< (eosTokenId + 1)]
+        let eosLogit: MLXArray? = if preservesEOS, allowsEOS, let eosRange {
+            logitsSlice[0..., eosRange]
         } else {
             nil
         }
@@ -1107,13 +1320,18 @@ public final class Qwen3TTSModel: Module, @unchecked Sendable {
             filteredLogits = takeAlong(filteredSortedLogits, inverseIndices, axis: -1)
         }
 
+        if let diagnostics, let eosRange {
+            let scaled = temperatureFirst ? logitsSlice : logitsSlice / temperature
+            diagnostics(softmax(scaled, axis: -1)[0, eosRange.lowerBound], filteredLogits[0, eosRange.lowerBound] .> -Float.infinity)
+        }
+
         if let eosLogit, let eosTokenId {
             let eosIdx = MLXArray([Int32(eosTokenId)]).reshaped(1, 1)
             filteredLogits = putAlong(filteredLogits, eosIdx, values: eosLogit, axis: -1)
         }
 
         // Sample with temperature
-        let token = categorical(filteredLogits / temperature)
+        let token = categorical(temperatureFirst ? filteredLogits : filteredLogits / temperature)
         return token.reshaped(1, 1)
     }
 

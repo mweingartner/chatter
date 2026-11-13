@@ -20,6 +20,8 @@ public struct Settings: Codable, Sendable {
     public var studioTone = "natural"
     /// Keep the studio (BF16) model resident instead of loading it for studio work on demand.
     public var keepStudioLoaded = false
+    /// Which model speaks for recorded voices at Responsive and Balanced quality (`RecordedVoiceModel`).
+    public var recordedVoiceModel = RecordedVoiceModel.automatic.rawValue
     public var defaultVoiceID: String?
     public var nextJobSequence: UInt64 = 1
     /// Optional pronunciation assistant. The stored name remains compatible with earlier releases.
@@ -31,7 +33,7 @@ public struct Settings: Codable, Sendable {
     public init() {}
     private enum CodingKeys: String, CodingKey {
         case lanPort, securityVersion, deleteExpiredAudio, retentionDays, retainedJobLimit, storageLimitGB, maximumSpeechMinutes, maximumGenerationMinutes, clientQueueLimit
-        case outputDirectory, port, queueCapacity, allowLAN, launchAtLogin, liveQuality, defaultPace, defaultVoiceID, nextJobSequence, studioTone, keepStudioLoaded
+        case outputDirectory, port, queueCapacity, allowLAN, launchAtLogin, liveQuality, defaultPace, defaultVoiceID, nextJobSequence, studioTone, keepStudioLoaded, recordedVoiceModel
         case expressionModel, expressionNotesInStudio, expressionNotesForRequests, ollamaAddress
     }
     public init(from decoder: any Decoder) throws {
@@ -57,6 +59,8 @@ public struct Settings: Codable, Sendable {
         studioTone = try values.decodeIfPresent(String.self, forKey: .studioTone) ?? studioTone
         if SpeechTone(rawValue: studioTone) == nil { studioTone = "natural" }
         keepStudioLoaded = try values.decodeIfPresent(Bool.self, forKey: .keepStudioLoaded) ?? keepStudioLoaded
+        recordedVoiceModel = try values.decodeIfPresent(String.self, forKey: .recordedVoiceModel) ?? recordedVoiceModel
+        if RecordedVoiceModel(rawValue: recordedVoiceModel) == nil { recordedVoiceModel = RecordedVoiceModel.automatic.rawValue }
         defaultPace = try values.decodeIfPresent(Double.self, forKey: .defaultPace) ?? defaultPace
         defaultVoiceID = try values.decodeIfPresent(String.self, forKey: .defaultVoiceID)
         nextJobSequence = try values.decodeIfPresent(UInt64.self, forKey: .nextJobSequence) ?? nextJobSequence
@@ -65,6 +69,39 @@ public struct Settings: Codable, Sendable {
         expressionNotesForRequests = try values.decodeIfPresent(Bool.self, forKey: .expressionNotesForRequests) ?? expressionNotesForRequests
         ollamaAddress = try values.decodeIfPresent(String.self, forKey: .ollamaAddress) ?? ollamaAddress
         if (try? OllamaClient.validatedAddress(ollamaAddress)) == nil { ollamaAddress = OllamaClient.defaultAddress }
+    }
+}
+
+/// The model that speaks for recorded voices in live speech (Responsive and Balanced quality).
+/// Studio quality and saved audio always use the studio model.
+///
+/// The 1.7B model is the one saved audio uses, so with it a reply sounds the same live as saved.
+/// Measured on JARVIS's and Scar's recordings (2026-11-12), both models say the words equally well
+/// and neither runs on once sampled without a top-p cut; JARVIS's timing for a sentence varied
+/// slightly less from draw to draw with the 1.7B model (3 to 5 % against 5 %). It needs about 5 GB
+/// of memory and a fast GPU to keep ahead of playback: 2.6 times real time on an M3 Ultra, against
+/// 3.5 times for the 0.6B model.
+public enum RecordedVoiceModel: String, Codable, CaseIterable, Sendable, Identifiable {
+    /// The studio model on a Mac with at least `automaticStudioMemory` of memory, else the fast one.
+    case automatic
+    /// 0.6B Base, 8-bit.
+    case fast
+    /// 1.7B Base, BF16.
+    case studio
+    public var id: String { rawValue }
+    public var title: String {
+        switch self { case .automatic: "Automatic"; case .fast: "Fast (0.6B)"; case .studio: "Studio (1.7B)" }
+    }
+    /// Macs with this much memory have the Max- and Ultra-class GPUs that run the studio model well
+    /// ahead of real time.
+    public static let automaticStudioMemory: UInt64 = 96 << 30
+
+    public func usesStudio(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Bool {
+        switch self {
+        case .automatic: physicalMemory >= Self.automaticStudioMemory
+        case .fast: false
+        case .studio: true
+        }
     }
 }
 

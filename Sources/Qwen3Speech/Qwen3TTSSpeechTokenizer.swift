@@ -380,7 +380,7 @@ final class DecoderAttention: Module {
         _ x: MLXArray,
         positionEmbeddings: (MLXArray, MLXArray),
         mask: MLXArray? = nil,
-        cache: (any KVCache)? = nil
+        cache: DecoderWindowCache? = nil
     ) -> MLXArray {
         let (batch, seqLen, _) = (x.dim(0), x.dim(1), x.dim(2))
 
@@ -442,11 +442,42 @@ final class DecoderTransformerLayer: Module {
         _ x: MLXArray,
         positionEmbeddings: (MLXArray, MLXArray),
         mask: MLXArray? = nil,
-        cache: (any KVCache)? = nil
+        cache: DecoderWindowCache? = nil
     ) -> MLXArray {
         var out = x + selfAttnLayerScale(selfAttn(inputLayernorm(x), positionEmbeddings: positionEmbeddings, mask: mask, cache: cache))
         out = out + mlpLayerScale(mlp(postAttentionLayernorm(out)))
         return out
+    }
+}
+
+/// The keys and values a decoder attention layer can still see while streaming.
+final class DecoderWindowCache {
+    var keys: MLXArray?
+    var values: MLXArray?
+    /// Frames seen so far: the position of the next frame.
+    var offset = 0
+    /// Frames currently held.
+    var count: Int { keys?.dim(2) ?? 0 }
+
+    func update(keys newKeys: MLXArray, values newValues: MLXArray) -> (MLXArray, MLXArray) {
+        let k = keys.map { concatenated([$0, newKeys], axis: 2) } ?? newKeys
+        let v = values.map { concatenated([$0, newValues], axis: 2) } ?? newValues
+        keys = k; values = v; offset += newKeys.dim(2)
+        return (k, v)
+    }
+
+    /// Drops all but the newest `limit` frames.
+    func keep(last limit: Int) {
+        guard let k = keys, let v = values, k.dim(2) > limit else { return }
+        let start = k.dim(2) - limit
+        keys = k[0..., 0..., start..., 0...]
+        values = v[0..., 0..., start..., 0...]
+    }
+
+    func copy() -> DecoderWindowCache {
+        let other = DecoderWindowCache()
+        other.keys = keys; other.values = values; other.offset = offset
+        return other
     }
 }
 
@@ -457,9 +488,15 @@ final class DecoderTransformer: Module {
     let rotaryEmb: DecoderRotaryEmbedding
     @ModuleInfo(key: "input_proj") var inputProj: Linear
     @ModuleInfo(key: "output_proj") var outputProj: Linear
+    /// Each frame attends to itself and the `attentionWindow - 1` frames before it, as the reference
+    /// does in every layer (`sliding_window`, 72 frames or 5.76 s; "All layer in code2wav should be
+    /// sliding attention"). The upstream Swift port attended to every earlier frame, which the decoder
+    /// was never trained on: past 72 frames its output drifts from the reference's. Nil restores that.
+    var attentionWindow: Int?
 
     init(config: Qwen3TTSTokenizerDecoderConfig) {
         self.config = config
+        self.attentionWindow = config.slidingWindow > 0 ? config.slidingWindow : nil
         self.layers = (0 ..< config.numHiddenLayers).map { DecoderTransformerLayer(config: config, layerIdx: $0) }
         _norm.wrappedValue = DecoderRMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
         self.rotaryEmb = DecoderRotaryEmbedding(dim: config.headDim, maxPositionEmbeddings: config.maxPositionEmbeddings, base: config.ropeTheta)
@@ -470,37 +507,32 @@ final class DecoderTransformer: Module {
     func callAsFunction(
         _ inputsEmbeds: MLXArray,
         mask: MLXArray? = nil,
-        cache: [any KVCache]? = nil
+        cache: [DecoderWindowCache]? = nil
     ) -> MLXArray {
         let (batch, seqLen, _) = (inputsEmbeds.dim(0), inputsEmbeds.dim(1), inputsEmbeds.dim(2))
 
         var x = inputProj(inputsEmbeds)
 
         let offset = cache?.first?.offset ?? 0
+        let held = cache?.first?.count ?? 0
         let posIds = broadcast(
             MLXArray(Int32(offset) ..< Int32(offset + seqLen)).reshaped(1, seqLen),
             to: [batch, seqLen]
         )
         let posEmb = rotaryEmb(x, positionIds: posIds)
 
-        var causalMask = mask
-        if causalMask == nil, seqLen > 1 {
-            let totalLen = offset + seqLen
-            var fullMask = MultiHeadAttention.createAdditiveCausalMask(totalLen).asType(x.dtype)
-            if totalLen > seqLen {
-                fullMask = fullMask[(totalLen - seqLen) ..< totalLen, 0...]
-            }
-            causalMask = fullMask
-        }
+        let causalMask = mask ?? windowedCausalMask(count: seqLen, held: held, window: attentionWindow, dtype: x.dtype)
 
         for (i, layer) in layers.enumerated() {
             x = layer(x, positionEmbeddings: posEmb, mask: causalMask, cache: cache?[i])
         }
+        // The next frame sees itself and `window - 1` earlier ones.
+        if let attentionWindow, let cache { for layer in cache { layer.keep(last: attentionWindow - 1) } }
         return outputProj(norm(x))
     }
 
-    func makeCache() -> [any KVCache] {
-        layers.map { _ in KVCacheSimple() }
+    func makeCache() -> [DecoderWindowCache] {
+        layers.map { _ in DecoderWindowCache() }
     }
 }
 
@@ -896,7 +928,7 @@ final class Qwen3TTSSpeechTokenizerEncoder: Module {
 final class Qwen3TTSSpeechTokenizerDecoder: Module {
     let config: Qwen3TTSTokenizerDecoderConfig
     let totalUpsample: Int
-    var transformerCache: [any KVCache]?
+    var transformerCache: [DecoderWindowCache]?
 
     @ModuleInfo(key: "pre_transformer") var preTransformer: DecoderTransformer
     @ModuleInfo var quantizer: SplitResidualVectorQuantizer
@@ -975,6 +1007,47 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
         }
     }
 
+    /// Everything `streamingStep` carries from one call to the next. Arrays are immutable once
+    /// evaluated, so a state can be restored any number of times.
+    struct StreamingState {
+        var caches: [DecoderWindowCache]?
+        var buffers: [MLXArray?]
+    }
+
+    /// Visits every convolution's carried samples, always in the same order.
+    private func visitStreamBuffers(_ visit: (inout MLXArray?) -> Void) {
+        visit(&preConv.streamBuffer)
+        for layer in upsample {
+            for part in layer.layers { if let block = part as? ConvNeXtBlock { visit(&block.dwconv.streamBuffer) } }
+        }
+        for layer in decoder {
+            if let initial = layer as? DecoderInitialConv { visit(&initial.streamBuffer) }
+            else if let block = layer as? DecoderBlock {
+                for part in block.block {
+                    if let upsample = part as? DecoderBlockUpsample { visit(&upsample.overflow) }
+                    else if let unit = part as? DecoderResidualUnit { visit(&unit.conv1.streamBuffer); visit(&unit.conv2.streamBuffer) }
+                }
+            }
+            else if let output = layer as? DecoderOutputConv { visit(&output.streamBuffer) }
+        }
+    }
+
+    func captureStreamingState() -> StreamingState {
+        var buffers: [MLXArray?] = []
+        visitStreamBuffers { buffers.append($0) }
+        let caches = transformerCache
+        var arrays = buffers.compactMap { $0 }
+        for cache in caches ?? [] { if let k = cache.keys, let v = cache.values { arrays += [k, v] } }
+        eval(arrays)
+        return StreamingState(caches: caches?.map { $0.copy() }, buffers: buffers)
+    }
+
+    func restoreStreamingState(_ state: StreamingState) {
+        transformerCache = state.caches?.map { $0.copy() }
+        var index = 0
+        visitStreamBuffers { $0 = state.buffers[index]; index += 1 }
+    }
+
     /// Incrementally decode only new codec tokens.
     func streamingStep(_ codes: MLXArray) -> MLXArray {
         if transformerCache == nil {
@@ -1014,7 +1087,11 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
         // Complete this step's lazy graph before returning it, so a later step
         // cannot race with the consumer's evaluation. Chatter's callers already
         // evaluate each chunk on the engine worker; this keeps the step safe alone.
-        eval(clipped)
+        // The windowed cache is evaluated with it, so what it keeps no longer refers
+        // to the frames it dropped.
+        var finished = [clipped]
+        for cache in transformerCache ?? [] { if let keys = cache.keys, let values = cache.values { finished += [keys, values] } }
+        eval(finished)
         return clipped
     }
 
@@ -1080,12 +1157,16 @@ final class Qwen3TTSSpeechTokenizer: Module {
         return (wav, audioLengths)
     }
 
-    func streamingDecode(_ audioCodes: MLXArray, chunkTokens: Int = 100) -> [MLXArray] {
+    /// Decodes `audioCodes` [batch, time, quantizers] in chunks. `state` continues an earlier decode
+    /// instead of starting from silence; `keepingState` leaves the decoder where this one ends.
+    func streamingDecode(_ audioCodes: MLXArray, chunkTokens: Int = 100,
+                         from state: Qwen3TTSSpeechTokenizerDecoder.StreamingState? = nil, keepingState: Bool = false) -> [MLXArray] {
         let codes = audioCodes.transposed(0, 2, 1)
         let totalTokens = codes.dim(-1)
         var chunks = [MLXArray]()
 
         decoder.resetStreamingState()
+        if let state { decoder.restoreStreamingState(state) }
 
         var startIndex = 0
         while startIndex < totalTokens {
@@ -1099,7 +1180,7 @@ final class Qwen3TTSSpeechTokenizer: Module {
             startIndex = endIndex
         }
 
-        decoder.resetStreamingState()
+        if !keepingState { decoder.resetStreamingState() }
         return chunks
     }
 

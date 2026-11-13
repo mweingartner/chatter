@@ -44,7 +44,9 @@ final class AppModel {
     var activeJobs: Int { (try? history?.activeCount()) ?? jobs.count { !$0.isTerminal } }
     /// The studio model stays loaded when asked to, or when studio is the default live quality
     /// (so live studio speech never waits for a model load).
-    var keepStudioResident: Bool { settings.keepStudioLoaded || settings.liveQuality == "studio" }
+    var keepStudioResident: Bool { settings.keepStudioLoaded || settings.liveQuality == "studio" || studioClones }
+    /// Whether recorded voices use the studio model for live speech too.
+    var studioClones: Bool { (RecordedVoiceModel(rawValue: settings.recordedVoiceModel) ?? .automatic).usesStudio() }
     var defaultVoice: VoiceProfile? { voices.first { $0.id == settings.defaultVoiceID } ?? voices.first }
     var loginStatus: String {
         switch SMAppService.mainApp.status {
@@ -89,7 +91,7 @@ final class AppModel {
                 self.drain()
                 Task { await self.warmVoices(); await self.importLucyIfNeeded() }
             }
-            applyNetwork(); startMaintenance(); engine.keepStudioLoaded = keepStudioResident; engine.start()
+            applyNetwork(); startMaintenance(); engine.keepStudioLoaded = keepStudioResident; engine.studioClones = studioClones; engine.start()
             if Bundle.main.bundleURL.pathExtension == "app", settings.launchAtLogin {
                 do { try SMAppService.mainApp.register() } catch { notice = "Login startup needs attention in General settings: \(error.localizedDescription)" }
             }
@@ -105,7 +107,10 @@ final class AppModel {
             _ = try OllamaClient.validatedAddress(settings.ollamaAddress)
             try prepareOutputDirectory()
             try ChatterPaths.save(settings, to: ChatterPaths.root.appending(path: "settings.json"))
-            engine.configure(keepStudioLoaded: keepStudioResident)
+            let changedModel = engine.studioClones != studioClones
+            engine.configure(keepStudioLoaded: keepStudioResident, studioClones: studioClones)
+            // Recorded voices are prepared for the model that speaks for them.
+            if changedModel { Task { await warmVoices() } }
         } catch { self.error = error.localizedDescription }
     }
     func setLogin(_ enabled: Bool) {

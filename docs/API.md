@@ -38,12 +38,12 @@ Add `?wait=true` to `POST /v1/speech` or `GET /v1/jobs/{id}` to hold the reply u
 
 | Level | Recorded voices | Built-in / designed voices | Playback |
 |---|---|---|---|
-| Responsive | 0.6B Base, 8-bit | 1.7B CustomVoice / VoiceDesign, BF16 | Short generated chunks |
-| Balanced | Same 0.6B Base, 8-bit | Same 1.7B model | Complete generated passages |
+| Responsive | 0.6B Base, 8-bit, or 1.7B Base, BF16 (Engine setting) | 1.7B CustomVoice / VoiceDesign, BF16 | Short generated chunks |
+| Balanced | Same model as Responsive | Same 1.7B model | Complete generated passages |
 | Studio | 1.7B Base, BF16 | Same 1.7B model | Complete generated passages |
 | Save WAV | 1.7B Base, BF16 | Same 1.7B model | File export |
 
-All levels output native 24 kHz mono, 24-bit PCM. BF16 describes model weights, not WAV bit depth. Balanced is a buffering choice, not an intermediate model. All save requests force Studio even when a lower live quality is supplied. See `qualities` and `saveQuality` in capabilities.
+All levels output native 24 kHz mono, 24-bit PCM. BF16 describes model weights, not WAV bit depth. Balanced is a buffering choice, not an intermediate model. The model for recorded voices at Responsive and Balanced is chosen in Engine settings (automatic: 1.7B on a Mac with 96 GB of memory or more); each quality's `models` in capabilities reports the one in use. Chunks are streamed only for `play`: a `render` is generated and checked passage by passage at any quality, since it is downloaded when finished. The same text in the same voice, model and settings produces the same audio every time. All save requests force Studio even when a lower live quality is supplied. See `qualities` and `saveQuality` in capabilities.
 
 ## Multi-actor dialogue
 

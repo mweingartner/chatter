@@ -42,7 +42,21 @@ public struct PassageEnvelope {
     /// Sound, for `trimmingEdgeSilence`, is within this many dB of the passage's loudest frame.
     static let soundRange = 40.0
 
-    private let edgeFrames, hop, window, preRoll, postRoll, lookAhead, tailFrames, leadKeep, trailKeep, attach: Int
+    private let edgeFrames, hop, window, preRoll, postRoll, lookAhead, tailFrames, leadKeep, trailKeep, attach, softEnd: Int
+    /// A streamed passage drops the room tone before its first sound (all but the 50 ms that fades in)
+    /// and whatever it still holds more than 100 ms after its last, so sentences follow each other as
+    /// closely streamed as they do whole. Nothing already handed on is ever taken back.
+    private let trimsEdges: Bool
+    /// The passage's last 60 ms of sound fade out, wherever that sound stops. Qwen ends a passage by
+    /// cutting to digital silence within a few milliseconds, from whatever level the voice or its
+    /// room tone has reached, sometimes on the last sample and sometimes a little before it. A voice
+    /// whose recording has an audible background (Scar's sits 27 dB below her speech) made that cut
+    /// a click, and a passage still sounding at its last sample ended as a clipped word under the
+    /// 8 ms edge. The room-tone fade alone cannot be relied on to cover the cut: it starts where
+    /// speech is judged to end, and a lively background is judged to be speech.
+    private let softensEnding: Bool
+    /// Below this level (dBFS) a 5 ms block is the model's digital silence, not sound.
+    static let digitalSilence = -70.0
     /// 80 ms of quieter frames are bridged, so a stop closure ("st…", "sp…") stays with its word.
     private let bridgeHops = 16
     private var opening = Opening.undecided
@@ -55,8 +69,10 @@ public struct PassageEnvelope {
     private var run = 0
     private var scan: [Float] = [], scanPrevious: Float = 0
 
-    public init(sampleRate: Int = 24_000) {
+    public init(sampleRate: Int = 24_000, trimsEdges: Bool = false, softensEnding: Bool = false) {
         precondition(sampleRate > 0)
+        self.trimsEdges = trimsEdges
+        self.softensEnding = softensEnding
         func frames(_ seconds: Double) -> Int { max(1, Int(Double(sampleRate) * seconds)) }
         edgeFrames = max(2, frames(0.008))
         hop = frames(0.005)
@@ -68,6 +84,7 @@ public struct PassageEnvelope {
         leadKeep = frames(0.05)
         trailKeep = frames(0.10)
         attach = frames(0.25)
+        softEnd = frames(0.06)
     }
 
     public mutating func append(_ samples: [Float]) -> [Float] {
@@ -76,6 +93,7 @@ public struct PassageEnvelope {
             guard let decided = decideOpening(final: false) else { return [] }
             opening = decided
             startSpeechScan()
+            dropLeadingRoomTone()
         } else {
             scanForSpeech(samples[...])
         }
@@ -89,14 +107,45 @@ public struct PassageEnvelope {
     }
 
     public mutating func finish() -> [Float] {
-        if case .undecided = opening { opening = decideOpening(final: true) ?? .plain(speech: false, floors: nil); startSpeechScan() }
+        if case .undecided = opening {
+            opening = decideOpening(final: true) ?? .plain(speech: false, floors: nil); startSpeechScan()
+            dropLeadingRoomTone()
+        }
         var output = pending
         pending.removeAll(keepingCapacity: true)
         applyOpening(&output, from: emittedFrames)
-        if case .roomTone(_, _, let floors) = opening { silenceTrailingRoomTone(&output, floors: floors) }
+        if case .roomTone(_, _, let floors) = opening {
+            let speechEnd = silenceTrailingRoomTone(&output, floors: floors)
+            if trimsEdges, output.count > speechEnd + trailKeep { output.removeLast(output.count - speechEnd - trailKeep) }
+        }
+        if softensEnding { fadeIntoFinalSilence(&output) }
         for i in output.indices { output[i] *= gain(output.count - 1 - i, length: edgeFrames) }
         emittedFrames += output.count
         return output
+    }
+
+    /// Finds where the held audio's sound stops (its last 5 ms block above `digitalSilence`), fades
+    /// the 60 ms before that point to zero, and silences what follows.
+    private func fadeIntoFinalSilence(_ samples: inout [Float]) {
+        var end = samples.count
+        while end >= hop {
+            var power = 0.0
+            for index in (end - hop) ..< end { power += Double(samples[index]) * Double(samples[index]) }
+            if 10 * log10(power / Double(hop) + 1e-14) > Self.digitalSilence { break }
+            end -= hop
+        }
+        guard end >= hop else { return }
+        for index in end ..< samples.count { samples[index] = 0 }
+        let fade = min(softEnd, end)
+        for distance in 0 ..< fade { samples[end - 1 - distance] *= gain(distance, length: fade) }
+    }
+
+    /// With `trimsEdges`, the passage starts where its fade-in starts. Called once, when the opening
+    /// is decided and nothing has been handed on.
+    private mutating func dropLeadingRoomTone() {
+        guard trimsEdges, case .roomTone(let fadeStart, let fadeLength, let floors) = opening, fadeStart > 0 else { return }
+        pending.removeFirst(min(fadeStart, pending.count))
+        opening = .roomTone(fadeStart: 0, fadeLength: fadeLength, floors: floors)
     }
 
     /// Whether the passage has shown sustained speech yet: `heardFrames` consecutive frames 15 dB
@@ -114,8 +163,10 @@ public struct PassageEnvelope {
     }
 
     private var heldFrames: Int {
+        // The ending's fade needs the place where sound stops, which lies in the last few tenths of
+        // a second.
         if case .roomTone = opening { return tailFrames }
-        return edgeFrames
+        return softensEnding ? tailFrames : edgeFrames
     }
 
     // MARK: Opening
@@ -235,18 +286,20 @@ public struct PassageEnvelope {
     /// Speech ends with the last frame above the opening room tone; after a short fade-out the rest is
     /// silence. Held audio that is all room tone fades from its start. Audio shorter than one analysis
     /// window is left to the final edge.
-    private func silenceTrailingRoomTone(_ samples: inout [Float], floors: (broadband: Double, emphasized: Double)) {
-        guard samples.count >= window else { return }
+    @discardableResult
+    private func silenceTrailingRoomTone(_ samples: inout [Float], floors: (broadband: Double, emphasized: Double)) -> Int {
+        guard samples.count >= window else { return samples.count }
         let broadband = Self.levels(samples[...], hop: hop, window: window)
         let emphasized = Self.levels(Self.preEmphasized(samples[...]), hop: hop, window: window)
         let last = broadband.indices.last {
             broadband[$0] >= floors.broadband + Self.speechRise || emphasized[$0] >= floors.emphasized + Self.speechRise
         }
-        let speechEnd = last.map { $0 * hop + window } ?? 0
+        let speechEnd = min(samples.count, last.map { $0 * hop + window } ?? 0)
         for i in speechEnd..<samples.count {
             let distance = i - speechEnd
             samples[i] *= distance < postRoll ? gain(postRoll - 1 - distance, length: postRoll) : 0
         }
+        return speechEnd
     }
 
     // MARK: Measures

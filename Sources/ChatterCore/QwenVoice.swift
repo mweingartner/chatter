@@ -85,27 +85,41 @@ public enum QwenCapabilities {
     }
 }
 
-/// How Qwen samples speech for a kind of voice. A designed voice is drawn afresh from its
-/// description for every passage, so it uses the VoiceDesign model's published settings (the
-/// reference implementation's defaults): the whole text in the prompt before the first frame,
-/// temperature 0.9 and no top-p cut. They keep the description's voice consistent from
-/// sentence to sentence; Chatter's steadier recorded and built-in settings let a description's
-/// voice drift between passages. Recorded and built-in voices keep those settings.
+/// How Qwen samples speech for a kind of voice.
+///
+/// Recorded and built-in voices use temperature 0.7, which keeps word errors low, with the
+/// reference's top-k 50 and no top-p cut. A top-p cut (0.8 until 3.4) is what made the 0.6B model run
+/// on: once the end-of-speech token falls outside the nucleus it can no longer be drawn, and the
+/// model loops in room tone until the frame budget runs out. Measured 2026-11-12 on JARVIS, 96
+/// passages each: 5 run-ons at top-p 0.8 (with or without upstream's end-of-speech exemption) and
+/// none at 1.0, with the same word accuracy.
+///
+/// A designed voice is drawn afresh from its description for every passage, so it uses the
+/// VoiceDesign model's published settings: the whole text in the prompt before the first frame and
+/// temperature 0.9, which keep the description's voice consistent from sentence to sentence.
+///
+/// No voice generates frames after the model chooses to end. 3.4.0 generated two, to let a last
+/// sound decay that the model had ended at full level; but the frames that follow the end are as
+/// often a short burst of noise after silence, which was heard as a click at the end of Scar's
+/// clips. The ending is shaped by `PassageEnvelope`'s fade instead.
 public struct QwenGeneration: Sendable, Equatable {
     public var temperature: Double
     public var topP: Double
     public var topK: Int
     /// The reference's `non_streaming_mode`: the model reads the whole passage before speaking.
     public var wholeTextFirst: Bool
+    /// Frames generated after the model chooses to end. Zero for every voice; kept for measurement.
+    public var framesAfterEnd: Int
 
-    public init(temperature: Double, topP: Double, topK: Int, wholeTextFirst: Bool) {
+    public init(temperature: Double, topP: Double, topK: Int, wholeTextFirst: Bool, framesAfterEnd: Int = 0) {
         self.temperature = temperature; self.topP = topP; self.topK = topK; self.wholeTextFirst = wholeTextFirst
+        self.framesAfterEnd = framesAfterEnd
     }
 
     public static func settings(for kind: VoiceKind) -> QwenGeneration {
         switch kind {
         case .designed: QwenGeneration(temperature: 0.9, topP: 1.0, topK: 50, wholeTextFirst: true)
-        case .cloned, .preset: QwenGeneration(temperature: 0.7, topP: 0.8, topK: 50, wholeTextFirst: false)
+        case .cloned, .preset: QwenGeneration(temperature: 0.7, topP: 1.0, topK: 50, wholeTextFirst: false)
         }
     }
 }

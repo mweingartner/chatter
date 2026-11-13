@@ -1,3 +1,24 @@
+# Chatter 3.4.1 clip endings — 2026-11-12
+
+3.4.0 shipped with a click at the end of Scar's clips, reported by its first listener within the hour. Its verification had judged endings by the level of a clip's last 20 ms, which a burst of noise followed by silence passes. Endings are now judged at every fall into digital silence, at 5 ms resolution: whether the sound fades or is cut, and whether a sound shorter than 60 ms stands alone in silence.
+
+- 200 jobs through the `chatter-engine` helper (50 replies per voice, rendered and streamed, 1.7B model): no failure, no second attempt, no simulated playback hole; transcripts as in 3.4.0. Scar: no cut and no burst in 100 clips (3.4.0: 9 cuts, 11 bursts), and the loudest final 5 ms of any clip 40 dB below her speech (3.4.0: 21 dB). JARVIS: 1 of 100 clip ends still counted as a cut, 38 dB below his speech (3.4.0: 13, up to 22 dB below); the cuts counted inside his clips are his clean recording going quiet in pauses, at least 41 dB below his speech.
+- 810 tests passed with `CHATTER_TEST_MLX=1`, three of them new for the ending. One existing timing test (`longPassagesTrimInLinearTime`) exceeded its ceiling once while the suites ran in parallel and passed alone and on a second run; it exercises code this change does not touch.
+- Still not a listening test by anyone but the user.
+
+# Chatter 3.4.0 recorded-voice verification — 2026-11-12
+
+Validated on a Mac Studio (M3 Ultra, 512 GB), macOS 27.3, Xcode 27.2, with the user's own Scar and JARVIS recordings. Nothing here is a listening test: audio was judged by on-device speech recognition and signal measures, and by comparison with the official PyTorch implementation. Whether a voice still sounds like its speaker is for its owner to hear; a before-and-after set was left for that.
+
+- **808-test suite passed** with `CHATTER_TEST_MLX=1`: 451 core, 166 audio, 91 engine (the Metal-backed Qwen tests included), 77 tooling and 23 system-speech tests. New tests cover the decoder's attention window and restorable streaming state, the sampler, the encoder's position layout, speech-activity monitoring, passage attempts and seeds, streamed edge trimming, the soft ending, playback pacing and the recorded-voice model setting.
+- **Parity with the reference** ([QWEN_PORT.md](QWEN_PORT.md)): encoder codes identical to PyTorch for both recordings (all sixteen codebooks, 286 and 417 frames); decoder audio within 1e-5 relative error, whole and streamed; speaker embedding cosine 1.000000; talker logits within BF16 precision over 361 teacher-forced frames.
+- **Settings chosen by measurement:** about 3,000 generated passages across 17 named variants of sampler, prompt layout, decoder and model, 96 per variant and voice.
+- **The engine as shipped:** 735 jobs through the `chatter-engine` helper over its protocol: 50 assistant-style replies per voice as renders, streamed play and saved files, on both models (300 before and 435 after the last adjustment to the speech monitor, which at first generated one- and two-word replies again for no reason). No job failed; no passage ran on, ended within 25 dB of its speech level, or paused longer than 0.6 s. In the final run of 400, the recognizer transcribed 99 of the 1.7B model's 100 distinct replies as written, apart from how it writes numbers and compounds ("6:42" as "642", "river bank" as "riverbank"); in one of Scar's it heard "cost" for "costs". Of the 0.6B model's 100 it transcribed 96 as written: Scar added an "uh", said "clouds" for "cloud" and the same "cost", and JARVIS read "6:42" as "six to forty-two". One 0.6B passage that did not start was generated again and then did; no 1.7B passage needed a second attempt. The same request always produced the same file, across runs and across a rebuild. Simulated playback of the streamed chunks' arrival times never ran dry mid-passage; the first chunk arrived after a median 0.36 to 0.50 s by voice (1.7B) and 0.25 s (0.6B).
+- **The packaged app,** launched with isolated data on another port under its engine sandbox: 21 jobs over HTTP (both recorded voices at every quality, Ryan and Aiden, a saved file, a two-voice dialogue) and three spoken on the Mac, all completed.
+- **The installed app:** the same eight replies were rendered by 3.3.3 before the update and by 3.4.0 after it. 3.3.3's set held a 13.5 s rendering of a 5 s reply (a 7.5 s silence inside it) and a Studio-quality passage that ended in sound; 3.4.0's has neither, and its longest pause is 0.4 s.
+
+Not covered: Macs with less memory or a slower GPU (the automatic model choice is a memory threshold, not a measured speed), languages other than English, voices other than Scar, JARVIS and a few passages from Ryan and Aiden, designed voices, and paces other than 1.0.
+
 # Chatter 3.1.0 security verification — 2026-10-01
 
 Validated locally on Apple Silicon with macOS 27 and Xcode 27 beta. These are development-build checks; no notarized 3.1.0 release is claimed.

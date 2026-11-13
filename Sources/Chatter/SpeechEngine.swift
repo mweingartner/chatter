@@ -27,6 +27,8 @@ final class SpeechEngine {
     @ObservationIgnored var onReady: (() -> Void)?
     /// Whether the studio profile stays resident; applied at launch and on every restart.
     @ObservationIgnored var keepStudioLoaded = false
+    /// Whether recorded voices use the studio profile at every quality; applied at launch and on every restart.
+    @ObservationIgnored var studioClones = false
 
     /// A busy engine that reports no generated frame for this long is considered wedged.
     static let stallLimit: Double = 120
@@ -85,6 +87,7 @@ final class SpeechEngine {
             env["CHATTER_DATA_ROOT"] = ChatterPaths.root.path
             env["TMPDIR"] = temporary.path + "/"
             env["CHATTER_KEEP_STUDIO"] = keepStudioLoaded ? "1" : "0"
+            env["CHATTER_STUDIO_CLONES"] = studioClones ? "1" : "0"
             p.environment = env; p.standardInput = stdin; p.standardOutput = stdout; p.standardError = log
             p.qualityOfService = .userInitiated
             let stream = AsyncStream<Data> { continuation in
@@ -179,10 +182,10 @@ final class SpeechEngine {
     }
 
     /// Forwards preferences that change engine residency (no reply is awaited).
-    func configure(keepStudioLoaded: Bool) {
-        self.keepStudioLoaded = keepStudioLoaded
+    func configure(keepStudioLoaded: Bool, studioClones: Bool) {
+        self.keepStudioLoaded = keepStudioLoaded; self.studioClones = studioClones
         guard ready else { return }
-        Task { _ = try? await command(["op": "configure", "keepStudioLoaded": keepStudioLoaded]) }
+        Task { _ = try? await command(["op": "configure", "keepStudioLoaded": keepStudioLoaded, "studioClones": studioClones]) }
     }
 
     func cancel(_ id: String) {

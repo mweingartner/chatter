@@ -81,6 +81,19 @@ public struct TransformerConfig {
 
 // MARK: - Utilities
 
+/// Additive attention mask for `count` new frames after `held` cached ones: causal, and limited to
+/// `window` frames including the frame itself (the reference's `sliding_window`). Nil when every
+/// held and new frame is visible to every new frame.
+public func windowedCausalMask(count: Int, held: Int, window: Int?, dtype: DType) -> MLXArray? {
+    let total = held + count
+    if count == 1, window.map({ total <= $0 }) ?? true { return nil }
+    let query = MLXArray(Int32(held) ..< Int32(total)).reshaped(count, 1)
+    let key = MLXArray(Int32(0) ..< Int32(total)).reshaped(1, total)
+    var visible = key .<= query
+    if let window { visible = visible .&& (key .> (query - Int32(window))) }
+    return which(visible, MLXArray(Float(0)), MLXArray(-Float.infinity)).asType(dtype)
+}
+
 @inline(__always)
 func geluApprox(_ x: MLXArray) -> MLXArray {
     // 0.5 * x * (1 + tanh( sqrt(2/pi)*(x + 0.044715*x^3) ))
@@ -113,6 +126,19 @@ public final class Attention: Module {
     @ModuleInfo public var in_proj: Linear
     @ModuleInfo public var out_proj: Linear
     @ModuleInfo public var rope: RoPE?
+    /// Qwen's tokenizer encoder is the Transformers Mimi model, whose rotary positions rotate the two
+    /// halves of each head (MLX's non-traditional layout). Upstream's Swift port used Kyutai's
+    /// interleaved layout, so a reference recording was encoded to codes the reference implementation
+    /// would not produce: 23 to 25 % of first-codebook codes agreed for Chatter's Scar and JARVIS
+    /// recordings, against every code with this layout (measured against PyTorch, 2026-11-12).
+    /// `false` restores the interleaved layout, for measurement.
+    ///
+    /// The reference encodes a whole recording with a plain causal mask: Transformers applies Mimi's
+    /// `sliding_window` (250 frames) only on its flash-attention path, so a recording longer than
+    /// 10 s attends to all of it, and so does this port.
+    public var matchesReference = true
+    /// Upstream's interleaved layout, kept only so its effect can be measured.
+    private let interleavedRope: RoPE?
 
     private let scale: Float
 
@@ -128,9 +154,11 @@ public final class Attention: Module {
         self.scale = 1.0 / Float(Double(cfg.headDim).squareRoot())
 
         if cfg.positionalEmbedding == "rope" {
-            self._rope = ModuleInfo(wrappedValue: RoPE(dimensions: cfg.headDim, traditional: true, base: Float(cfg.maxPeriod)))
+            self._rope = ModuleInfo(wrappedValue: RoPE(dimensions: cfg.headDim, traditional: false, base: Float(cfg.maxPeriod)))
+            self.interleavedRope = RoPE(dimensions: cfg.headDim, traditional: true, base: Float(cfg.maxPeriod))
         } else {
             self._rope = ModuleInfo(wrappedValue: nil)
+            self.interleavedRope = nil
         }
     }
 
@@ -149,7 +177,7 @@ public final class Attention: Module {
         var k = swappedAxes(qkv[0..<qkv.shape[0], 0..<qkv.shape[1], 1, 0..<qkv.shape[3], 0..<qkv.shape[4]], 1, 2)
         var v = swappedAxes(qkv[0..<qkv.shape[0], 0..<qkv.shape[1], 2, 0..<qkv.shape[3], 0..<qkv.shape[4]], 1, 2)
 
-        if let rope {
+        if let rope = matchesReference ? rope : interleavedRope {
             q = rope(q, offset: cache.offset)
             k = rope(k, offset: cache.offset)
         }
@@ -309,6 +337,12 @@ public final class Transformer: Module {
 
     public func makeCache() -> [KVCacheSimple] {
         return (0..<cfg.numLayers).map { _ in KVCacheSimple() }
+    }
+
+    /// See `Attention.matchesReference`.
+    public var matchesReference: Bool {
+        get { layers.first?.self_attn.matchesReference ?? true }
+        set { for layer in layers { layer.self_attn.matchesReference = newValue } }
     }
 }
 

@@ -51,7 +51,7 @@ let package = Package(
         .testTarget(name: "ChatterAudioKitTests", dependencies: ["ChatterAudioKit"], resources: [.copy("Fixtures")]),
         .testTarget(name: "ChatterToolingKitTests", dependencies: ["ChatterToolingKit"]),
         .testTarget(name: "ChatterSystemSpeechTests", dependencies: ["ChatterSystemSpeech", "ChatterCore"]),
-        .testTarget(name: "ChatterEngineTests", dependencies: ["ChatterEngine", "ChatterAudioKit", "ChatterCore", "Qwen3Speech"],
+        .testTarget(name: "ChatterEngineTests", dependencies: ["ChatterEngine", "ChatterAudioKit", "ChatterCore", "Qwen3Speech", "Qwen3CodecSupport"],
                     resources: [.copy("Fixtures")]),
     ]
 )

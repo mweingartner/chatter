@@ -3,11 +3,14 @@ import Testing
 
 struct DesignedVoiceTests {
     /// A designed voice is drawn from its description each passage: the VoiceDesign model's
-    /// published settings keep it consistent. Other kinds keep Chatter's steadier sampling.
+    /// published settings keep it consistent. Other kinds keep Chatter's steadier temperature. No
+    /// kind cuts the nucleus: a top-p cut can remove the end-of-speech token for good, which is what
+    /// made recorded voices run on into silence. No kind generates frames after the model's end:
+    /// they were as often a burst of noise as a decay, and clicked.
     @Test func designedVoicesUseTheVoiceDesignReferenceSettings() {
         #expect(QwenGeneration.settings(for: .designed) == QwenGeneration(temperature: 0.9, topP: 1.0, topK: 50, wholeTextFirst: true))
         for kind in [VoiceKind.cloned, .preset] {
-            #expect(QwenGeneration.settings(for: kind) == QwenGeneration(temperature: 0.7, topP: 0.8, topK: 50, wholeTextFirst: false))
+            #expect(QwenGeneration.settings(for: kind) == QwenGeneration(temperature: 0.7, topP: 1.0, topK: 50, wholeTextFirst: false))
         }
     }
 

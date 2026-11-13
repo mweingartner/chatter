@@ -62,6 +62,8 @@ public struct ConfigureCommand: Codable, Sendable {
     public var keepStudioLoaded: Bool?
     /// Seconds of studio inactivity before its weights are released.
     public var studioIdleSeconds: Double?
+    /// Use the studio profile for recorded voices at every quality (and keep it resident).
+    public var studioClones: Bool?
 }
 
 public enum EngineCommand: Sendable {

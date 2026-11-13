@@ -2,7 +2,7 @@ import Foundation
 import ChatterCore
 
 extension AppModel {
-    static var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.3.3" }
+    static var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.4.1" }
     func json(_ value: Any, status: Int = 200) -> HTTPResponse {
         do { return HTTPResponse(status: status, body: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed])) }
         catch { return HTTPResponse(status: 500, body: Data("{\"error\":\"JSON encoding failed\"}".utf8)) }
@@ -35,7 +35,7 @@ extension AppModel {
          "expression":["provider":"qwen-native","automaticAnnotation":false,"instructionsSeparateFromText":true],
          "qualities":SpeechQuality.allCases.map { quality in
              ["id":quality.rawValue,"name":quality.title,"description":quality.detail,"streamsChunks":quality.streamsChunks,
-              "models":Dictionary(uniqueKeysWithValues:VoiceKind.allCases.map { ($0.rawValue,quality.modelProfile(for:$0,mode:"play")) })] as [String:Any]
+              "models":Dictionary(uniqueKeysWithValues:VoiceKind.allCases.map { ($0.rawValue,quality.modelProfile(for:$0,mode:"play",studioClones:studioClones)) })] as [String:Any]
          },
          "saveQuality":SpeechQuality.saveNotice,
          "modes":[["id":"play","description":"Speaks on the host Mac at the requested or live quality."],

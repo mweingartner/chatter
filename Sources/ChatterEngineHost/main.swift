@@ -49,6 +49,7 @@ final class EngineHost: @unchecked Sendable {
         let dataRoot = URL(filePath: environment["CHATTER_DATA_ROOT"] ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Chatter").path)
         var configuration = EngineConfiguration(modelsRoot: URL(filePath: environment["CHATTER_MODELS"] ?? dataRoot.appending(path: "Models").path), dataRoot: dataRoot)
         if environment["CHATTER_KEEP_STUDIO"] == "1" { configuration.keepStudioLoaded = true }
+        if environment["CHATTER_STUDIO_CLONES"] == "1" { configuration.studioClones = true }
         engine = SpeechEngineCore(configuration: configuration) { [unowned self] id, event, fields in
             // The engine emits on the worker thread, where its profile list may be read.
             if id == EngineProtocol.engineID, event == "loaded" || event == "unloaded" { status.set(profiles: engine.loadedProfiles) }

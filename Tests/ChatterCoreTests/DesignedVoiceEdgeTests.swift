@@ -196,7 +196,9 @@ struct DesignedVoiceEdgeTests {
         }
         // Designed voices sample more widely than recorded and built-in voices, which share settings.
         let designed = QwenGeneration.settings(for: .designed), cloned = QwenGeneration.settings(for: .cloned)
-        #expect(designed.temperature > cloned.temperature && designed.topP > cloned.topP)
+        // No kind cuts the nucleus, which could put the end of speech out of reach.
+        #expect(designed.temperature > cloned.temperature && designed.topP == 1 && cloned.topP == 1)
+        #expect(VoiceKind.allCases.allSatisfy { QwenGeneration.settings(for: $0).framesAfterEnd == 0 })
         #expect(QwenGeneration.settings(for: .preset) == cloned)
     }
 
@@ -204,6 +206,7 @@ struct DesignedVoiceEdgeTests {
         let base = QwenGeneration(temperature: 0.9, topP: 1, topK: 50, wholeTextFirst: true)
         var changed = base; changed.temperature = 0.8; #expect(changed != base)
         changed = base; changed.topP = 0.95; #expect(changed != base)
+        changed = base; changed.framesAfterEnd = 1; #expect(changed != base)
         changed = base; changed.topK = 40; #expect(changed != base)
         changed = base; changed.wholeTextFirst = false; #expect(changed != base)
     }

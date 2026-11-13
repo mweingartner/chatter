@@ -11,6 +11,9 @@ public struct EngineConfiguration: Sendable {
     public var modelsRoot: URL
     public var dataRoot: URL
     public var keepStudioLoaded = false
+    /// Recorded voices use the studio (1.7B) model at every quality, not only for Studio and saved
+    /// audio. It then counts as a live model: it stays loaded like the fast one.
+    public var studioClones = false
     public var studioIdleSeconds: Double = 600
     public var cacheLimitBytes = 1 << 30
     public var memoryLimitBytes = 40 << 30
@@ -37,23 +40,27 @@ public final class SpeechEngineCore: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath:directory(.fast).appending(path:"config.json").path) else { throw EngineFailure.failed(Self.modelsMissing) }
         MemoryPolicy.apply(configuration)
         _ = try model(.fast)
-        if configuration.keepStudioLoaded { _ = try model(.quality) }
+        if keepsStudio { _ = try model(.quality) }
         MemoryPolicy.relax()
     }
+    private var keepsStudio: Bool { configuration.keepStudioLoaded || configuration.studioClones }
     public func configure(_ command: ConfigureCommand) throws {
         if let idle=command.studioIdleSeconds, idle.isFinite, idle>=0 { configuration.studioIdleSeconds=idle }
-        if let keep=command.keepStudioLoaded { if keep { _ = try model(.quality) }; configuration.keepStudioLoaded=keep }
+        // A preference that needs the studio model takes effect only once it has loaded.
+        if command.keepStudioLoaded == true || command.studioClones == true { _ = try model(.quality) }
+        if let keep=command.keepStudioLoaded { configuration.keepStudioLoaded=keep }
+        if let studio=command.studioClones { configuration.studioClones=studio }
     }
     public var loadedProfiles: [String] { SpeechProfile.allCases.filter { models[$0] != nil }.map(\.rawValue) }
     public func idleTick(now: Date = Date()) {
         guard !busy else { return }
-        for profile in SpeechProfile.allCases where profile != .fast && !(profile == .quality && configuration.keepStudioLoaded) {
+        for profile in SpeechProfile.allCases where profile != .fast && !(profile == .quality && keepsStudio) {
             if models[profile] != nil, now.timeIntervalSince(lastUsed[profile] ?? .distantPast)>=configuration.studioIdleSeconds { unload(profile,reason:"idle") }
         }
     }
     public func relieveMemoryPressure(critical: Bool) {
         conditioningCache.removeAll()
-        if !busy { for profile in SpeechProfile.allCases where profile != .fast && (critical || !configuration.keepStudioLoaded || profile != .quality) { unload(profile,reason:"memory pressure") } }
+        if !busy { for profile in SpeechProfile.allCases where profile != .fast && (critical || !keepsStudio || profile != .quality) { unload(profile,reason:"memory pressure") } }
         MemoryPolicy.relax()
     }
     private func unload(_ profile: SpeechProfile, reason: String) {
@@ -109,14 +116,16 @@ public final class SpeechEngineCore: @unchecked Sendable {
         guard samples.count>=2400 else { throw EngineFailure.invalid("Use at least 0.1 seconds of reference speech.") }
         let loaded=try model(profile)
         let value=try loaded.prepareReferenceConditioning(refAudio:MLXArray(samples),refText:references.map { QwenPromptSafety.spokenText($0.transcript) }.joined(separator:" "),language:language)
-        // Bounded cache. Each set may include long recordings; release all on pressure or edit.
-        if conditioningCache.count>=8 { conditioningCache.removeAll() }
+        // Bounded cache: a set holds its recording's codes and the decoder's state after it, a few
+        // megabytes at most. Released on memory pressure or when a recording is prepared.
+        if conditioningCache.count>=24 { conditioningCache.removeAll() }
         conditioningCache[key]=value
         return value
     }
     public func precache(_ command: PrecacheCommand) throws {
         guard !command.references.isEmpty else { return }
-        for profile in [SpeechProfile.fast,.quality] where models[profile] != nil {
+        // With the studio model serving every recorded voice, the fast one never speaks for them.
+        for profile in (configuration.studioClones ? [SpeechProfile.quality] : [.fast,.quality]) where models[profile] != nil {
             let language=command.language ?? "Auto"
             let prepared=try conditioning(command.references,profile:profile,language:language)
             let loaded=try model(profile)

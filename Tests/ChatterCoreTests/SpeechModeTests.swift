@@ -34,6 +34,40 @@ struct SpeechModeTests {
         #expect(SpeechQuality.responsive.modelProfile(for: .cloned, mode: "save") == "quality")
     }
 
+    /// With the studio model chosen for recorded voices, it speaks for them at every quality and in
+    /// every mode; other kinds of voice are unaffected.
+    @Test func recordedVoicesCanUseTheStudioModelEverywhere() {
+        for quality in SpeechQuality.allCases {
+            for mode in ["play", "render", "save"] {
+                #expect(quality.modelProfile(for: .cloned, mode: mode, studioClones: true) == "quality", "\(quality) \(mode)")
+                #expect(quality.modelProfile(for: .preset, mode: mode, studioClones: true) == "custom")
+                #expect(quality.modelProfile(for: .designed, mode: mode, studioClones: true) == "design")
+            }
+        }
+    }
+
+    @Test func automaticPicksTheStudioModelOnlyWithEnoughMemory() {
+        #expect(RecordedVoiceModel.automatic.usesStudio(physicalMemory: 512 << 30))
+        #expect(RecordedVoiceModel.automatic.usesStudio(physicalMemory: 96 << 30))
+        #expect(!RecordedVoiceModel.automatic.usesStudio(physicalMemory: 64 << 30))
+        #expect(!RecordedVoiceModel.automatic.usesStudio(physicalMemory: 16 << 30))
+        for memory in [UInt64(8) << 30, 512 << 30] {
+            #expect(RecordedVoiceModel.studio.usesStudio(physicalMemory: memory))
+            #expect(!RecordedVoiceModel.fast.usesStudio(physicalMemory: memory))
+        }
+    }
+
+    @Test func theRecordedVoiceModelSettingSurvivesARoundTripAndRejectsNonsense() throws {
+        var settings = Settings()
+        #expect(settings.recordedVoiceModel == "automatic")
+        settings.recordedVoiceModel = "studio"
+        let decoded = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded.recordedVoiceModel == "studio")
+        // A file from before the setting existed, or with a value Chatter does not know, means automatic.
+        #expect(try JSONDecoder().decode(Settings.self, from: Data("{}".utf8)).recordedVoiceModel == "automatic")
+        #expect(try JSONDecoder().decode(Settings.self, from: Data(#"{"recordedVoiceModel":"huge"}"#.utf8)).recordedVoiceModel == "automatic")
+    }
+
     // MARK: ?wait=
 
     @Test(arguments: [(nil, nil), ("true", 30), ("TRUE", 30), ("", 30), ("false", nil), ("0", nil), ("5", 5), ("0.25", 0.25), ("30", 30)] as [(String?, Double?)])

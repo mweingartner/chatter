@@ -9,6 +9,8 @@ do {
     case "models": try await Models.run(Array(arguments.dropFirst()))
     case "transcribe": try await TranscribeCommand.run(Array(arguments.dropFirst()))
     case "assist": try await AssistCommand.run(Array(arguments.dropFirst()))
+    case "lab": try await LabCommand.run(Array(arguments.dropFirst()))
+    case "activity": try LabCommand.activity(Array(arguments.dropFirst()))
     case "remotion", "verify", "help", "-h", "--help", nil:
         // Integration commands (Remotion staging, installed-app verification).
         exit(await ChatterToolsCommand.run(arguments))
